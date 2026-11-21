@@ -1,68 +1,60 @@
 # Configuration (`config.ini`)
 
-File location: repository root (next to `main.py`; bundled as a data file in builds).
-Writers: `utils/startup_config.StartupConfig` (creates/repairs defaults at startup) and
-`gui/main_window.MainWindow._save_config` (on close and *File → Save Settings*). Both rewrite the whole file and
-drop comments. Defaults differ between them (VL-043).
+**Location** (first match wins):
+
+1. `%VISIONLANE_HOME%` environment variable, if set;
+2. the program folder, if an (empty) file named `portable` exists next to `main.py` / the executable;
+3. `%LOCALAPPDATA%\VisionLaneOCR` (Windows), `~/.local/share/VisionLaneOCR` (Linux), `~/Library/Application Support/VisionLaneOCR` (macOS).
+
+The file is created on first run and is git-ignored. The single reader/writer is `utils/app_config.AppConfig`
+(atomic write; unknown keys and the old `[Startup]` section are ignored on load and dropped on save; invalid values
+fall back to defaults). Settings are saved when you click *Start Processing*, *File -> Save Settings* and on exit.
 
 ## `[General]`
 
-| Key | Values | Default (StartupConfig) | Used by |
-|-----|--------|-------------------------|---------|
-| `dpi` | `Auto`, 72, 96, 150, 200, 240, 250, 300, 350, 400, 450, 500, 600, 800, 900, 1200 | `Auto` | GUI → `ocr.dpi` (`None` = from image metadata, else 300). Ignored for PDF input (always 300). |
-| `output_format` | `PDF`, `HOCR`, `PDF+HOCR` | `PDF` | GUI → `ocr.output_formats` |
-| `theme_mode` | `system`, `light`, `dark`, `night` | `system` | `MainWindow._apply_theme` |
-| `detection_model` | doctr detection arch (`db_resnet50`, `linknet_*`, `db_mobilenet_v3_large`, `fast_*`) | `db_resnet50` | `OCRProcessor` |
-| `recognition_model` | doctr recognition arch (`parseq`, `crnn_*`, `sar_resnet31`, `master`, `vitstr_*`) | `parseq` | `OCRProcessor` |
-| `compress_enabled` | bool | `False` (repo file: `True`) | per-page Ghostscript step (VL-014) |
-| `compression_type` | `jpeg`, `jpeg2000`, `lzw`, `png` | `jpeg` | `pypdfcompressor` |
-| `compression_quality` | 0–100 | `100` | `pypdfcompressor` |
-| `archive_enabled` | bool (true if any tab's checkbox is ticked) | `False` | GUI (VL-003) |
+| Key | Values | Default | Effect |
+|-----|--------|---------|--------|
+| `dpi` | `Auto`, 72, 96, 150, 200, 240, 250, 300, 350, 400, 450, 500, 600, 800, 900, 1200 | `Auto` | PDF page size = pixels x 72 / dpi. `Auto` = image metadata (30-4800), else 300. For PDF input it is the render resolution (default 300). |
+| `output_format` | `PDF`, `HOCR`, `PDF+HOCR` | `PDF` | |
+| `theme_mode` | `system`, `light`, `dark`, `night` | `system` | |
+| `detection_model` | any DocTR detection architecture | `db_resnet50` | |
+| `recognition_model` | any DocTR recognition architecture | `parseq` | |
+| `device` | `auto`, `gpu`, `cpu` | `auto` | `auto`/`gpu` use CUDA when a working device exists; otherwise the CPU is used and the reason is logged |
+| `compress_enabled` | bool | `False` | re-encode page images while writing the PDF |
+| `compression_type` | `jpeg`, `lossless` | `jpeg` | legacy `jpeg2000` -> `jpeg`; `lzw`, `png` -> `lossless` |
+| `compression_quality` | 1-100 | `85` | JPEG quality (ignored for `lossless`) |
+| `skip_text_pages` | bool | `True` | PDF input: do not re-OCR pages that already contain text (ignored when HOCR output is requested) |
+| `archive_enabled_single` / `_folder` / `_pdf` | bool | `False` | per tab. A legacy single `archive_enabled` applies to all three tabs |
 
 ## `[Paths]`
-
-`single`, `folder`, `pdf` (last inputs), `output_single`, `output_folder`, `output_pdf` (last outputs),
-`archive_single`, `archive_folder`, `archive_pdf`. Empty by default. The committed file contains the developer's
-`D:` paths (VL-045).
+`single`, `folder`, `pdf` (last inputs), `output_single`, `output_folder`, `output_pdf`, `archive_single`, `archive_folder`,
+`archive_pdf`. Empty by default; a saved input path is restored only if it still exists.
 
 ## `[Performance]`
-
 | Key | Default | Effect |
 |-----|---------|--------|
-| `thread_count` | logical CPUs | `QThreadPool.setMaxThreadCount` only (no real effect, VL-037) |
-| `operation_timeout` | 300 (GUI fallback 600) | stored on `OCRProcessor`, **never enforced** |
-| `chunk_timeout` | 60 | stored, **never enforced** |
+| `cpu_threads` | `0` (automatic) | `torch.set_num_threads(n)` - affects CPU inference only. (Legacy `thread_count` is read as a fallback; `operation_timeout` / `chunk_timeout` were removed because they were never enforced.) |
 
-## `[Startup]` ("experimental – do not edit")
+## `[Logging]`
+| Key | Default | Effect |
+|-----|---------|--------|
+| `level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`. `python main.py --debug` forces `DEBUG` |
 
-| Key | Default | Actually used? |
-|-----|---------|----------------|
-| `enable_parallel_loading` | True | only printed in the log header |
-| `show_detailed_progress` | True | yes — selects file/console log levels (`logging_config.py`) |
-| `cache_validation_results` | True | no |
-| `skip_doctr_setup_check` | False | no |
-| `skip_model_validation` | False | no |
-| `auto_download_models` | True | constructs `EnhancedModelManager` only (downloads nothing) |
-| `use_minimal_diagnostics` | False | no |
-| `startup_timeout` | 120 | no |
-| `max_parallel_workers` | logical CPUs | no |
-| `cache_expiry_hours` | 24 | no (cache TTLs are hard-coded in `startup_cache.py`) |
-| `skip_system_diagnostics` | False | yes (`main.py:226`) |
-| `detailed_logging`, `log_level` | True / INFO | written by `StartupConfig` only; never read |
-
-## Other persistent state
+## Files written
 
 | Path | Content |
 |------|---------|
-| `~/.cache/visionlane_ocr/*.json` | `StartupCache` (DocTR setup 24 h, models 7 d, system 1 h, config hash) — only written by the unused `setup_doctr_with_progress` |
-| `~/.cache/doctr/models/*.pt` (or `$DOCTR_CACHE_DIR/models`) | DocTR weights |
-| `<app>/logs/` | `ocr_process_*.log`, `ocr_gui_*.log`, `debug_*.log`, `memory_*.log`, `crash_*.log` |
-| `%TEMP%\VisionLaneOCR_temp` | scratch directory (deleted/recreated on start, VL-027) |
+| `<data dir>/config.ini` | settings (see above) |
+| `<data dir>/logs/visionlane_<timestamp>.log` | one file per session; the newest 20 are kept |
+| `<data dir>/logs/crash.log` | native crash tracebacks (`faulthandler`) |
+| `%TEMP%\VisionLaneOCR_*` | private scratch folder of a running job; removed when the job ends |
+| `<app folder>/doctr_cache/models/*.pt` | DocTR weights (`<name>-<hash>.pt`); git-ignored. Falls back to `<data dir>/doctr_cache` if the app folder is not writable, or to `$DOCTR_CACHE_DIR/models` if that is set |
 
-## Environment variables touched by the code
+## Environment variables
+| Variable | Used for |
+|----------|----------|
+| `VISIONLANE_HOME` | overrides the config/log folder |
+| `DOCTR_CACHE_DIR` | where DocTR stores model weights. If you do not set it, `utils.models.configure_cache()` sets it to `<app folder>/doctr_cache` at start-up (and copies models found in the old `~/.cache/doctr/models` once). If you set it, your value wins and nothing is copied |
+| `QT_QPA_PLATFORM=offscreen` | headless GUI tests |
 
-`USE_TORCH`, `DOCTR_BACKEND` (obsolete in doctr ≥ 1.0), `CUDA_LAUNCH_BLOCKING`, `PYTORCH_CUDA_ALLOC_CONF`,
-`CUDA_VISIBLE_DEVICES` (set to empty!, VL-008), `CUDA_MEMORY_FRACTION`, `CUDA_CACHE_DISABLE`, `CUDA_FORCE_PTX_JIT`,
-`CUDA_DISABLE_PTX_JIT`, `CUDA_DEVICE_ORDER`, `PYTHONWARNINGS`, `PYTORCH_ENABLE_MPS_FALLBACK`,
-`PYTORCH_MPS_HIGH_WATERMARK_RATIO`, `CUDA_DRIVER_LIBRARY_PATH`, `CUDA_TOOLKIT_ROOT_DIR`, `PATH` (adds NVSMI/System32).
-Honoured (read) by DocTR: `DOCTR_CACHE_DIR`.
+The application sets **no** environment variables itself.

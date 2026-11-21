@@ -1,52 +1,67 @@
-# Setup, running, building
+# Setup, running, testing, building
 
 ## Requirements
 
-- Windows 10/11 (code has Windows-specific paths: `gswin64c.exe`, `wmi`, `CREATE_NO_WINDOW`; most of the logic is portable).
+- Windows 10/11 recommended (the code is portable; build scripts and CI target Windows).
 - **Python 3.12+** (see [modernization.md](modernization.md)).
-- NVIDIA GPU optional (CPU fallback exists). README advises ≥ 8 GB VRAM; below 6 GB it crashes often.
-- [Ghostscript](https://www.ghostscript.com/releases/gsdnld.html) — needed for PDF **input** and for the (weak) compression feature. Detected via `PATH` then `C:\Program Files[ (x86)]\gs\gs*\bin\gswin64c.exe`, highest version wins.
-- Poppler only if you rely on the `pdf2image` fallback.
+- NVIDIA GPU optional. 8 GB VRAM recommended; smaller cards fall back to the CPU per page when they run out of memory.
+- **No Ghostscript, Poppler or Tesseract** is needed any more (PDF rendering uses `pypdfium2`, compression is done by Pillow/reportlab).
 
 ## Install and run
 ```bat
-python -m venv .venv
-.venv\Scripts\activate
-python -m pip install --upgrade pip
-:: GPU users: install torch/torchvision from the CUDA index first (see requirements.txt header)
-pip install -r requirements.txt
-python verify_models.py     :: optional, pre-downloads db_resnet50 + parseq
-python main.py
+deploy_pyvenv.bat                 :: creates .venv, installs requirements.txt (checks for Python 3.12+)
+.venv\Scripts\python main.py
 ```
-`deploy_pyvenv.bat` automates the venv + install (message still says "Python 3.8+").
+GPU users: install the CUDA build of torch/torchvision first (see the header of `requirements.txt`), then the requirements.
+
+Diagnostics (versions, GPU, model cache, config/log folders):
+```bat
+.venv\Scripts\python -m utils.diagnostics
+```
+Pre-download the default models (optional, the app also does it on first start): `python verify_models.py`.
 
 ## Using the GUI
-1. Pick a tab: **Single File** and **PDF** are currently broken (VL-001/002); use **Folder**.
-2. Choose input folder (recursively scanned for images and PDFs), output directory, optional archive directory.
-3. Options: DPI (Auto = from image metadata else 300), output format (PDF / HOCR / PDF+HOCR), detection and recognition model (⬇️ = not cached, downloads on selection), compression.
-4. **Start Processing**. Output goes to `<output>/OCR_Session_<timestamp>/…` (see [architecture.md](architecture.md)).
-5. **Cancel** stops between images and deletes temp files.
+1. Pick a tab: **Single File** (an image or a PDF), **Folder** (scanned recursively), **PDF**.
+2. Choose the input and an output directory (must not be inside the input folder). Optionally enable **Archiving?** and choose an archive directory.
+3. Options: DPI, output format, **Device** (Auto / GPU / CPU), detection and recognition model (a ⬇ marks models that are not downloaded yet; selecting one downloads and loads it in the background), compression (JPEG quality / lossless), skip PDF pages that already have text.
+4. **Start Processing.** The status line shows the file and page being worked on; the bar shows overall progress.
+5. **Cancel** finishes the current page, writes no half-finished PDFs and archives nothing.
+6. A summary dialog reports successes and lists every failed file with the reason; *Open Output Folder* jumps to the session folder.
 
-Supported inputs: `.tif .tiff .jpg .jpeg .jpe .png .bmp .gif .dib .jiff` (+ `.heic`, not actually readable, VL-019) and `.pdf`.
+Supported inputs: `.tif .tiff .jpg .jpeg .jpe .jfif .png .bmp .dib .gif` (multi-page TIFF supported), `.heic .heif` when
+`pillow-heif` is installed, and `.pdf`.
 
-## Headless script
-`run_ocr.py` expects `input/images` and `input/pdfs` beside the script and writes to `output/`. It currently fails
-(VL-001, VL-051) until `input_path`/`dpi` handling is fixed.
+## Command line
+```bat
+python run_ocr.py INPUT OUTPUT_DIR [--formats pdf hocr] [--dpi 300] [--compress jpeg|lossless] [--quality 80]
+                  [--device auto|gpu|cpu] [--det db_resnet50] [--reco parseq] [--no-skip-text] [--archive DIR]
+```
+INPUT is a folder, an image or a PDF. Exit code 0 = everything OK, 1 = some files failed, 2 = cancelled / bad arguments.
 
 ## Logs
-`<repo>/logs/`: `ocr_process_*.log` (startup), `ocr_gui_*.log` (GUI session), `debug_*.log`, `memory_*.log`, `crash_*.log`.
+`%LOCALAPPDATA%\VisionLaneOCR\logs\` (see [configuration.md](configuration.md)). Use `python main.py --debug` for verbose output.
+
+## Tests and lint
+```bat
+.venv\Scripts\pip install -r requirements-dev.txt
+.venv\Scripts\python -m pytest        :: 54 tests; headless; fake engine plus one real-DocTR test
+run_pylint.bat                        :: read-only; writes pylint_report.txt
+```
+`tests/test_integration_doctr.py` runs the real DocTR pipeline with random weights (no download) and is skipped
+automatically when torch/doctr are not installed. On machines without PyQt6/torch the affected tests are skipped or use a stub.
 
 ## Build
 
 | Script | Output | Notes |
 |--------|--------|-------|
-| `build_pyinstaller.bat` | `dist_pyinstaller\dist\VisionLaneOCR\` | runs `verify_models.py`, then `pyinstaller --clean build.spec`; see VL-048 |
-| `build_nuitka.bat` | `dist_nuitka\main.dist\` | standalone mode; detects MSVC/MinGW/clcache/ccache, writes a `USE_TORCH` marker file, copies CUDA/NVML DLLs; see VL-049 |
-| `reset_cleanup_temp.bat` | – | deletes `temp_binaries`, `logs`, `dist_*`, lint temp files |
-| `reset_env_pycache.bat` | – | deletes `.venv` and all `__pycache__`/`.pyc` |
-| `run_pylint.bat` / `pylint_clean.py` | `pylint_cleanup.log` | **modifies source files** (VL-052) |
+| `build_pyinstaller.bat` | `dist_pyinstaller\dist\VisionLaneOCR\` | runs `verify_models.py`, then `pyinstaller --clean build.spec` |
+| `build_nuitka.bat` | `dist_nuitka\main.dist\` | standalone build; Nuitka may download MinGW64 on first use; ccache optional |
+| `reset_cleanup_temp.bat` | - | deletes build output and generated reports |
+| `reset_env_pycache.bat` | - | deletes `.venv` and all `__pycache__` / `.pyc` |
+| `run_pylint.bat` | `pylint_report.txt` | read-only lint |
 
-Both packagers reference modules and paths that changed (see VL-048/049); expect to repair them after the dependency upgrade.
+**Both build scripts were rewritten without access to Windows - do a test build and run the result on a clean machine (VL-066).**
 
-## Lint / CI
-`.github/workflows/pylint.yml` runs pylint on Ubuntu for Python 3.10–3.12 and never fails (`|| true`). `.pylintrc` disables most size/complexity checks.
+## CI
+`.github/workflows/pylint.yml` runs on `windows-latest` for Python 3.12 and 3.13: installs `requirements-dev.txt`, runs
+pytest (offscreen Qt) and pylint with `--fail-under=9.0`. A failing step fails the build.

@@ -12,7 +12,7 @@ REM and that the build.spec file is located in the same directory as this script
 REM This script is intended for use on Windows systems.
 REM --------------------------------------------------------
 REM Filepath (Assume relative path to this script):
-REM .\build.bat
+REM .\build_pyinstaller.bat
 REM .\build.spec
 REM .\.venv\Scripts\pyinstaller
 
@@ -30,7 +30,7 @@ IF %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-REM then tart PyInstaller build
+REM then start the PyInstaller build
 echo Building application with PyInstaller...
 .\.venv\Scripts\pyinstaller --distpath="dist_pyinstaller/dist" --workpath="dist_pyinstaller/build" --clean build.spec
 

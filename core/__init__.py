@@ -1,7 +1,5 @@
+"""Core modules for VisionLane OCR.
+
+Importing this package is cheap: heavy modules (torch, doctr) are only loaded when
+``core.ocr_processor`` / ``core.hardware`` are imported explicitly.
 """
-Core modules for VisionLane OCR
-"""
-from .ocr_processor import OCRProcessor
-from . import doctr_patch
-from . import doctr_torch_setup
-__all__ = ['OCRProcessor', 'doctr_patch', 'doctr_torch_setup']

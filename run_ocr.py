@@ -1,111 +1,80 @@
-from core.ocr_processor import OCRProcessor
-from utils.logging_config import setup_logging
+"""Command line interface.
+
+    python run_ocr.py INPUT OUTPUT_DIR [--formats pdf hocr] [--dpi 300] [--compress jpeg --quality 80]
+                      [--device auto|gpu|cpu] [--det db_resnet50] [--reco parseq] [--archive DIR]
+
+INPUT may be a folder (searched recursively), an image or a PDF.
+Exit code: 0 = everything OK, 1 = some files failed, 2 = cancelled / bad arguments.
+"""
+from __future__ import annotations
+
+import argparse
 import logging
-import os
-from datetime import datetime, UTC
+import sys
 from pathlib import Path
-def setup_directories():
-    # Get the directory where run_ocr.py is located
-    base_dir = Path(__file__).parent
-    # Create input and output directories in the same folder as run_ocr.py
-    input_dirs = {
-        'images': base_dir / 'input' / 'images',
-        'pdfs': base_dir / 'input' / 'pdfs'
-    }
-    # Create directories if they don't exist
-    for dir_path in input_dirs.values():
-        dir_path.mkdir(parents=True, exist_ok=True)
-    return base_dir
-def find_files_recursive(directory: Path, extensions: list) -> list:
-    """
-    Recursively find files with specific extensions in a directory
-    Args:
-        directory (Path): Directory to search in
-        extensions (list): List of file extensions to look for
-    Returns:
-        list: List of found files    """
-    files = []
+
+from core.constants import DEFAULT_DETECTION_MODEL, DEFAULT_RECOGNITION_MODEL
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="VisionLane OCR (command line)")
+    p.add_argument("input", type=Path, help="folder, image or PDF")
+    p.add_argument("output", type=Path, help="output directory (an OCR_Session_<time> folder is created inside)")
+    p.add_argument("--formats", nargs="+", choices=["pdf", "hocr"], default=["pdf"])
+    p.add_argument("--dpi", type=int, default=None, help="default: from the image metadata, else 300")
+    p.add_argument("--compress", choices=["jpeg", "lossless"], default=None, help="recompress page images in the PDF")
+    p.add_argument("--quality", type=int, default=85, help="JPEG quality 1-100 (with --compress jpeg)")
+    p.add_argument("--device", choices=["auto", "gpu", "cpu"], default="auto")
+    p.add_argument("--det", default=DEFAULT_DETECTION_MODEL, help="detection model")
+    p.add_argument("--reco", default=DEFAULT_RECOGNITION_MODEL, help="recognition model")
+    p.add_argument("--no-skip-text", action="store_true", help="OCR PDF pages even if they already contain text")
+    p.add_argument("--archive", type=Path, default=None, help="move successfully processed inputs here")
+    p.add_argument("--verbose", action="store_true")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+                        format="%(asctime)s - %(levelname)s - %(message)s")
+    if not args.input.exists():
+        print(f"Input not found: {args.input}", file=sys.stderr)
+        return 2
+
+    from core.archiver import archive_inputs
+    from core.ocr_processor import OCRProcessor
+    from utils import models
+
+    models.configure_cache()
+    for kind, name in ((models.DETECTION, args.det), (models.RECOGNITION, args.reco)):
+        if not models.is_cached(name):
+            models.download(kind, name)
+
+    processor = OCRProcessor(args.det, args.reco, args.device)
+    processor.configure(output_formats=args.formats, dpi=args.dpi, compress_enabled=args.compress is not None,
+                        compression_type=args.compress or "jpeg", compression_quality=args.quality,
+                        skip_text_pages=not args.no_skip_text)
+    processor.progress_callback = lambda e: None
     try:
-        # Walk through directory and all subdirectories
-        for root, _, filenames in os.walk(directory):
-            root_path = Path(root)
-            for ext in extensions:
-                # Find files with the current extension
-                files.extend(root_path.glob(f"*.{ext}"))
-        return sorted(files)  # Sort files for consistent processing order
-    except Exception as e:
-        logging.error("Error searching directory %s: %s", directory, e)
-        return files
+        result = (processor.process_folder(args.input, args.output) if args.input.is_dir()
+                  else processor.process_file(args.input, args.output))
+    except KeyboardInterrupt:
+        processor.cancel()
+        print("Cancelled", file=sys.stderr)
+        return 2
 
-
-def main():
-    # Get base directory and setup directories
-    base_dir = setup_directories()
-    # Setup enhanced logging
-    logger = setup_logging(base_dir)
-    # Print script information using timezone-aware datetime
-    current_time = datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')
-    logger.info("=" * 80)
-    logger.info("OCR Processing Session Started at UTC: %s", current_time)
-    logger.info("User: %s", "NeoMatrix14241")
-    logger.info("Working directory: %s", base_dir)
-    logger.info("=" * 80)
-    # Initialize the OCR processor
-    processor = OCRProcessor(
-        output_base_dir=str(base_dir / "output")
-    )
-    # Define supported extensions
-    image_extensions = ['jpg', 'jpeg', 'png', 'tif', 'tiff']
-    pdf_extensions = ['pdf']
-    # Process all images in the input/images directory and its subdirectories
-    images_dir = base_dir / "input" / "images"
-    pdfs_dir = base_dir / "input" / "pdfs"    # Process images
-    if images_dir.exists():
-        image_files = find_files_recursive(images_dir, image_extensions)
-        if image_files:
-            logger.info("Found %d images to process", len(image_files))
-            for image_file in image_files:
-                try:
-                    # Create relative path structure in output directory
-                    rel_path = image_file.relative_to(images_dir)
-                    logger.info("Processing image: %s", rel_path)
-                    # Create output subdirectories if needed
-                    output_subdir = base_dir / "output" / "hocr" / rel_path.parent
-                    output_subdir.mkdir(parents=True, exist_ok=True)
-                    output_subdir = base_dir / "output" / "pdf" / rel_path.parent
-                    output_subdir.mkdir(parents=True, exist_ok=True)
-                    processor.process_image(str(image_file))
-                except Exception as e:
-                    logger.error("Failed to process image %s: %s", rel_path, e)
-        else:
-            logger.info("No image files found in input/images directory")    # Process PDFs
-    if pdfs_dir.exists():
-        pdf_files = find_files_recursive(pdfs_dir, pdf_extensions)
-        if pdf_files:
-            logger.info("Found %d PDFs to process", len(pdf_files))
-            for pdf_file in pdf_files:
-                try:
-                    # Create relative path structure in output directory
-                    rel_path = pdf_file.relative_to(pdfs_dir)
-                    logger.info("Processing PDF: %s", rel_path)
-                    # Create output subdirectories if needed
-                    output_subdir = base_dir / "output" / "hocr" / rel_path.parent
-                    output_subdir.mkdir(parents=True, exist_ok=True)
-                    output_subdir = base_dir / "output" / "pdf" / rel_path.parent
-                    output_subdir.mkdir(parents=True, exist_ok=True)
-                    processor.process_pdf(str(pdf_file))
-                except Exception as e:
-                    logger.error("Failed to process PDF %s: %s", rel_path, e)
-        else:
-            logger.info("No PDF files found in input/pdfs directory")    # Enhanced summary logging
-    logger.info("=" * 80)
-    logger.info("Processing Summary:")
-    logger.info("-" * 40)
-    logger.info("Total images processed: %d", len(image_files) if 'image_files' in locals() else 0)
-    logger.info("Total PDFs processed: %d", len(pdf_files) if 'pdf_files' in locals() else 0)
-    logger.info("Output directory: %s", base_dir / 'output')
-    logger.info("=" * 80)
+    print(result.summary())
+    for line in result.failure_lines():
+        print("FAILED:", line, file=sys.stderr)
+    if result.session_dir:
+        print("Output:", result.session_dir)
+    if args.archive and result.total:
+        report = archive_inputs(result, args.archive)
+        print(f"Archived {len(report.moved)} file(s) to {args.archive}")
+        for err in report.errors:
+            print("ARCHIVE:", err, file=sys.stderr)
+    return 0 if result.ok else (2 if result.cancelled else 1)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

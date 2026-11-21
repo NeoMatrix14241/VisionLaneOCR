@@ -1,22 +1,19 @@
 # Architecture
 
-VisionLane OCR is a Windows-oriented desktop application (PyQt6) that batch-converts scanned images and PDFs into
-**searchable PDFs** and/or **hOCR** files using [DocTR](https://github.com/mindee/doctr) (PyTorch) for text
-detection + recognition.
+VisionLane OCR is a desktop application (PyQt6) that batch-converts scanned images and PDFs into **searchable PDFs**
+and/or **hOCR** files using [DocTR](https://github.com/mindee/doctr) (PyTorch) for text detection + recognition.
 
 ```
 repo
-├── main.py                 GUI entry point (splash → progressive import → MainWindow)
-├── run_ocr.py              Headless script (currently broken, see VL-001/VL-051)
-├── debug_run.py            Debug wrapper (broken: calls main.main())
-├── verify_models.py        Pre-downloads db_resnet50 + parseq (used by build scripts)
-├── config.ini              Persisted GUI/startup settings
-├── core/                   OCR engine + CUDA/DocTR compatibility patches
-├── gui/                    PyQt6 window, worker thread, (unused) splash/log handler
-├── utils/                  PDF/HOCR conversion, compression, logging, startup helpers
-├── data/                   Unused paper-size table + generator script
-├── build.spec / build_*.bat   PyInstaller and Nuitka packaging
-└── docs/                   This documentation
+├── main.py              GUI entry point (splash -> background import -> MainWindow)
+├── run_ocr.py           Command line interface (same OCRProcessor API)
+├── verify_models.py     Pre-downloads the default models (used by the build scripts)
+├── core/                OCR engine, orchestration, PDF reading/writing, archiving (no Qt)
+├── gui/                 PyQt6 window, input tabs, background workers, theme, dialogs
+├── utils/               config, paths, logging, model catalogue, diagnostics
+├── data/                paper-size table (groundwork for the "uniform paper size" roadmap item)
+├── tests/               pytest suite (headless)
+└── build.spec, build_*.bat, .github/workflows/pylint.yml
 ```
 
 ## 1. Layers
@@ -25,139 +22,117 @@ repo
 flowchart TD
     subgraph GUI["gui/ (PyQt6, main thread)"]
         MW[MainWindow]
-        W[OCRWorker : QRunnable]
+        IT[InputTab x3]
+        WK["workers: Task / OCRJob (daemon threads)"]
     end
-    subgraph CORE["core/"]
+    subgraph CORE["core/ (no Qt)"]
         OP[OCRProcessor]
-        PATCH[CUDA / DocTR patches]
+        EN[OCREngine]
+        PW[pdf_writer]
+        PI[pdf_input]
+        AR[archiver]
+        HW[hardware]
     end
     subgraph UTIL["utils/"]
-        H2P[hocr_to_pdf]
-        CMP[pypdfcompressor]
-        MISC[logging, startup cache/config, diagnostics, thread killer ...]
+        CFG[app_config / app_paths / logging_config / models]
     end
     DOCTR[(DocTR + PyTorch)]
-    GS[(Ghostscript)]
-    MW -->|creates, configures| OP
-    MW -->|starts| W
-    W -->|process_folder / process_image / process_pdf| OP
-    OP --> DOCTR
-    OP --> H2P
-    OP --> CMP --> GS
-    OP -->|PDF input| GS
-    PATCH -.imported first.-> DOCTR
+    MW --> IT
+    MW -->|starts| WK
+    WK -->|process_folder / process_file| OP
+    OP --> EN --> DOCTR
+    OP --> PW
+    OP --> PI
+    MW -->|after the run| AR
+    MW --> HW
+    MW --> CFG
 ```
 
-`OCRProcessor` is a single large class (≈1400 lines) that owns the model, the output directories, temp files,
-cancellation state and the merge logic. The GUI configures it by **assigning attributes directly**
-(`ocr.dpi`, `ocr.output_formats`, `ocr.compress_enabled` …), so there is no formal API between the two.
+The only interface between GUI and engine is: `OCRProcessor(...)`, `configure(...)`, `progress_callback`,
+`process_folder()/process_file()`, `cancel()`, and the returned `BatchResult`. `core/` never imports Qt, so it can be
+used from the CLI and tested without a display; `core.ocr_processor` does not even import torch unless it has to build
+an engine (tests inject a fake engine).
 
 ## 2. Startup sequence (`main.py`)
 
-```mermaid
-sequenceDiagram
-    participant M as main.py
-    participant Q as Qt event loop
-    M->>M: set USE_TORCH=1, DOCTR_BACKEND=torch
-    M->>Q: show_instant_splash() (plain QWidget, white box)
-    M->>Q: QTimer.singleShot(100) → load_modules_progressively
-    Note over M: everything below runs ON the GUI thread
-    M->>M: import core.cuda_patch_wrapper
-    Note right of M: triggers core/__init__ → ocr_processor (imports torch, doctr, PyPDF2, ocrmypdf) → doctr_patch → doctr_torch_setup (replaces builtins.__import__, probes CUDA)
-    M->>M: apply_hardware_monitoring_patches()
-    M->>M: import utils.debug_helper, startup_cache; StartupConfig()
-    M->>M: setup_logging(); SystemDiagnostics.run_diagnostics(quick=True)
-    M->>M: EnhancedModelManager()  (constructed, nothing downloaded)
-    M->>M: import gui.main_window (imports torch again, pynvml…)
-    M->>M: launch_main_application → DebugLogger() + MainWindow()
-    M->>Q: QTimer.singleShot(0, MainWindow._delayed_init)
-    Note over M: _delayed_init: populate model combos (may download), OCRProcessor() (GPU check, load model), setup file logging, start 1 s hardware timer
-    M->>Q: window.show(); close splash after 500 ms
-```
+1. Load `config.ini` (`AppConfig`), set up logging once (`utils/logging_config.setup_logging`), install crash handlers.
+2. Create `QApplication`, show the splash immediately.
+3. A **background thread** imports `torch` and `doctr.models` (the slow part) while the splash animates.
+4. When the import finishes, create `MainWindow` and show it. `MainWindow` builds the UI from the config and starts an
+   `engine-load` task on a background thread: download missing models, build `OCRProcessor` (device detection, CUDA
+   smoke test, model load). The *Start* button is enabled when it is ready; failures are shown in a dialog.
+5. Exit: `closeEvent` (asks if a job runs -> cancel -> wait up to 30 s -> save config) -> `app.exec()` returns.
 
-The "progressive loading" percentages are cosmetic (artificial `sleep`s; two status updates are commented out by a
-merge bug, VL-039). `ParallelLoader`, `StartupLoader` and the `startup_cache` are **not** used on this path.
-
-Exit: `aboutToQuit → cleanup_on_exit` (terminates child processes, `sys.exit(0)`), `MainWindow.closeEvent`
-(`sys.exit(0)` again) and finally `os._exit` after `app.exec()` (VL-035).
+There are no `sleep`s, no import-time patches and no second splash.
 
 ## 3. Processing pipeline
 
-### 3.1 Folder mode (the only mode that works)
-
 ```mermaid
 flowchart TD
-    A[Start Processing] --> B[GUI: _get_processing_params sets ocr.output_base_dir, input_path, dpi, formats]
-    B --> C[OCRWorker.run on QThreadPool]
-    C --> D[OCRProcessor.process_folder]
-    D --> E[create OCR_Session_timestamp / pdf, hocr, temp]
-    E --> F[rglob → images + PDFs]
-    F --> G{for each file sequentially}
-    G -->|image| H[process_image]
-    G -->|PDF| I[process_pdf]
-    H --> J[_process_single_image → temp page PDF]
-    J --> K{last name-sorted image of its folder?}
-    K -->|yes| L[_merge_folder_pdfs → pdf/rel/folder.pdf]
-    K -->|no| G
-    I --> M[Ghostscript → PNG pages → _process_single_image each → merge → rel/stem_ocr.pdf]
-    L --> G
-    M --> G
-    G -->|done| N[cleanup temp, return status/processed/failed/total]
-    N --> O[GUI: _process_finished: message box + optional archiving]
+    A[Start Processing] --> B[validate paths in the GUI]
+    B --> C["OCRJob thread: processor.process_folder / process_file"]
+    C --> D[discover inputs: natural order, folder by folder]
+    D --> E[create OCR_Session_timestamp + private temp dir]
+    E --> F{group}
+    F -->|images of one folder| G[for each file: for each frame -> OCR -> page PDF in temp]
+    G --> H["merge page PDFs once per folder -> pdf/.../folder.pdf"]
+    F -->|PDF file| I["render page (pypdfium2) -> OCR -> overlay text on original page (pypdf)"]
+    H --> J[BatchResult]
+    I --> J
+    J --> K["GUI: summary dialog, archive confirmed inputs"]
 ```
 
-### 3.2 One image (`OCRProcessor._process_single_image`)
+### 3.1 One image page (`OCRProcessor._ocr_page`)
+1. `_open_frames`: Pillow opens the file; every frame of a multi-frame TIFF is a page; EXIF orientation applied; DPI = user value, else image metadata (30-4800), else 300.
+2. The image is converted to an RGB array and passed to `OCREngine.predict()` (`torch.inference_mode()`; CUDA OOM recovery, see below).
+3. The DocTR result is converted to `OcrPage` (words in pixel coordinates) for the PDF and, if requested, exported with `export_as_xml()` as HOCR.
+4. `pdf_writer.write_image_page_pdf`: page size = pixels x 72 / dpi; the image is embedded (JPEG-recompressed at the chosen quality, Flate for lossless, or the original JPEG bytes if nothing changes); the text is drawn invisibly (render mode 3), each word scaled to its box.
 
-1. Open with Pillow; flatten alpha onto white or convert to RGB (temp PNG if converted).
-2. Decide DPI: explicit GUI value → else image metadata → else 300.
-3. CUDA housekeeping (sync, `empty_cache`, sets `CUDA_LAUNCH_BLOCKING=1` — VL-006).
-4. `DocumentFile.from_images(path)` → `self.model(docs)` under `torch.no_grad()`; on `RuntimeError("CUDA…")` move to CPU permanently (VL-007).
-5. `result.export_as_xml()` → hOCR-style XML written to a temp `.hocr`; copied to `hocr/<rel>/<stem>.hocr` when HOCR output is requested.
-6. If PDF requested: `utils.hocr_to_pdf.hocr_to_pdf(hocr, image, intermediate_pdf, dpi)` (up to 3 attempts) → copy to the numbered temp page PDF.
-7. Optional per-page Ghostscript "compression" (VL-014).
-8. `finally`: delete temp files, `empty_cache`, `gc.collect()`.
+### 3.2 PDF input (`core/pdf_input.py`)
+`PdfSource` (pypdfium2) reports the page count, whether a page already has text (>= 20 characters) and renders a page at
+the chosen DPI (default 300, capped at 40 megapixels). After OCR, `apply_text_layers` clones the source with pypdf and
+merges one text-only overlay page per recognised page (the cropbox offset and `/Rotate` are handled). Pages that were
+skipped, or failed, are copied unchanged, so the output always has every page of the input.
 
-### 3.3 Output layout
+### 3.3 Out-of-memory handling (`core/ocr_engine.py`)
+`predict` -> on CUDA OOM: `empty_cache()`, retry on the GPU -> still OOM: run **this call** on the CPU and move the model
+back to the GPU. Any other CUDA error switches to the CPU for the rest of the session. At start-up a one-kernel smoke
+test catches GPUs the installed PyTorch cannot run, and a notice is shown when the GPU has less than 8 GB.
 
+### 3.4 Output layout
 ```
 <output>/OCR_Session_YYYYMMDD_HHMMSS/
-    pdf/<relative input folder>/<folder name>.pdf        # all images of a folder merged, name-sorted
-    pdf/<relative input folder>/<pdf stem>_ocr.pdf       # for PDF inputs
-    hocr/<relative input folder>/<image stem>.hocr       # per image
-    hocr/<relative input folder>/<pdf stem>/<pdf stem>_page_0001.hocr   # per PDF page
-    temp/                                                # removed at the end
+    pdf/<relative folder>/<folder name>.pdf     all images of a folder, natural name order (root folder: <input folder name>.pdf)
+    pdf/<relative folder>/<name>.pdf            PDF inputs: original pages + text layer
+    pdf/<name>.pdf                              single image / single PDF
+    hocr/<relative folder>/<image name>.hocr    per image (multi-frame TIFF: <name>_p0002.hocr; clashes: <name>_<ext>.hocr)
+    hocr/<relative folder>/<pdf name>/<pdf name>_page_0001.hocr
 ```
+Name clashes anywhere in a session get ` (2)`, ` (3)`... The session folder is only created when there are inputs.
+Intermediate page PDFs live in a private `tempfile.TemporaryDirectory` that is removed at the end of every run.
 
-For images at the root of the chosen folder, the folder's own name is used as `<relative input folder>`.
+### 3.5 Results and failure policy
+Every input file produces a `FileResult` with a `Status`:
 
-## 4. Threading and cancellation model
+| Status | When | Archived? |
+|--------|------|-----------|
+| `SUCCESS` | all pages processed and written | yes (if archiving is on) |
+| `PARTIAL` | some pages failed; the output contains the others | no |
+| `FAILED` | unreadable file, no page worked, or the merge failed | no |
+| `CANCELLED` | not (completely) processed because of Cancel | no (and nothing is archived after a cancel) |
+
+A cancelled run does not write the merged PDF of the folder that was in progress.
+
+## 4. Threading and cancellation
 
 | Thread | What runs |
 |--------|-----------|
-| Main (Qt) | Everything in `main.py`, `MainWindow` (including model download, `OCRProcessor()` construction, hardware polling every 1 s, folder scanning) |
-| `QThreadPool` worker | `OCRWorker.run` → whole batch, sequentially, one file at a time |
-| `ImageProcessor` (daemon) | Started per worker, never given work (VL-034) |
-| `MemoryMonitor` (daemon) | Logs RSS/VRAM every 10 s forever (`DebugLogger`) |
+| Main (Qt) | UI, the 1 s hardware read-out (`HardwareMonitor`), signal handlers, archiving (fast file moves) |
+| `preload` (daemon) | `import torch, doctr` during start-up |
+| `engine-load` / `engine-reload` (daemon) | model download, engine construction, model/device switches |
+| `ocr-job` (daemon) | the whole batch, sequentially |
+| `count-files` (daemon) | counting images/PDFs in a selected folder |
 
-Cancellation is a set of flags (`is_cancelled`, `_force_stop`, `_exit_event`) checked **between** images, plus
-`ThreadKiller`/`ProcessManager` brute force (VL-022). A model forward pass cannot be interrupted.
-
-`OCRProcessor.thread_pool` (a `ThreadPoolExecutor` sized to the logical CPU count) and two `spawn` multiprocessing
-queues are created but never used.
-
-## 5. Compatibility / patch layer
-
-Historically written to make DocTR+PyTorch+CUDA 12.8 work inside Nuitka/PyInstaller builds:
-
-| Module | Purpose | Status |
-|--------|---------|--------|
-| `core/cuda_patch_wrapper.py` | Orchestrates the patches below, patches `torch.version.cuda` | imported by `main.py` |
-| `core/cuda_env_patch.py` | Sets CUDA environment variables | applied via wrapper; contains VL-008 |
-| `core/nuitka_cuda_patch.py` | Wraps `torch.cuda.*`, fake device props in fallback | applied if "Nuitka" detected; also imported by `ocr_processor` |
-| `core/runtime_cuda_patch.py` | Wraps `torch.tensor/zeros/…` | **never imported** |
-| `core/cuda_compat_plugin.py` | Nuitka plugin to fake CUDA 12.9 | **never activated** |
-| `core/hardware_monitoring_patch.py` | Safe psutil/pynvml/wmi wrappers | applied; detection likely never true |
-| `core/doctr_patch.py`, `core/doctr_torch_setup.py` | Force DocTR to see PyTorch (TF/Torch detection of doctr < 1.0) | obsolete with doctr ≥ 1.0 |
-
-With python-doctr ≥ 1.0 (PyTorch only) and current PyTorch wheels none of these are needed — see
-[modernization.md](modernization.md).
+All are plain `threading.Thread` daemons wrapped in `gui.workers.Task`; results come back to the GUI thread as Qt signals.
+Cancellation is cooperative (`threading.Event`), checked between pages and files; a page that is already in inference
+finishes first (VL-065).

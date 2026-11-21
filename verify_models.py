@@ -1,19 +1,28 @@
-from pathlib import Path
-from doctr import models
-cache_dir = Path.home() / ".cache" / "doctr" / "models"
-required_models = ["db_resnet50.pt", "parseq.pt"]
-# Check for each model
-def model_exists(name):
-    return any(p.name.startswith(name) for p in cache_dir.glob("*.pt"))
-print("Verifying DocTR models...")
-if not model_exists("db_resnet50"):
-    print("Downloading db_resnet50 (text detection)...")
-    models.detection.db_resnet50(pretrained=True)
-else:
-    print("db_resnet50 model already present.")
-if not model_exists("parseq"):
-    print("Downloading parseq (text recognition)...")
-    models.recognition.parseq(pretrained=True)
-else:
-    print("parseq model already present.")
-print("All required DocTR models are present.")
+"""Download the default DocTR models if they are missing (used by the build scripts and for first-run setup)."""
+import sys
+
+from core.constants import DEFAULT_DETECTION_MODEL, DEFAULT_RECOGNITION_MODEL
+from utils import models
+
+
+def main() -> int:
+    print("Verifying DocTR models...")
+    models.configure_cache()
+    print(f"Cache folder: {models.doctr_cache_dir()}")
+    ok = True
+    for kind, name in ((models.DETECTION, DEFAULT_DETECTION_MODEL), (models.RECOGNITION, DEFAULT_RECOGNITION_MODEL)):
+        if models.is_cached(name):
+            print(f"{name} already present.")
+            continue
+        print(f"Downloading {name} ({kind})...")
+        try:
+            models.download(kind, name)
+        except Exception as exc:  # pylint: disable=broad-except
+            print(f"  FAILED: {exc}")
+            ok = False
+    print("All required DocTR models are present." if ok else "Some models could not be downloaded.")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

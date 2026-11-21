@@ -1,8 +1,9 @@
 # Dependency modernization guide
 
-`requirements.txt` now pins the newest releases available on PyPI (checked Nov 2026). The old file targeted
-Python 3.10–3.12, torch 2.7, python-doctr 0.11 and ocrmypdf 16. Upgrading is **not** a pure version bump: the
-code needs the small changes below. Everything marked *verified* was checked against the real wheels.
+`requirements.txt` pins the newest releases available on PyPI (checked Nov 2026). The old file targeted
+Python 3.10–3.12, torch 2.7, python-doctr 0.11 and ocrmypdf 16. Upgrading was **not** a pure version bump: the code
+needed the changes listed in section 2, **all of which are now done** in the refactor (see
+[known-issues.md](known-issues.md)). Everything marked *verified* was checked against the real wheels/sources.
 
 ## 1. Version table
 
@@ -16,87 +17,59 @@ code needs the small changes below. Everything marked *verified* was checked aga
 | PyQt6 | 6.9.0 | 6.12.1 | |
 | numpy | 2.2.6 | 2.5.5 | |
 | Pillow | 11.2.1 | 13.0.0 | |
-| pandas | 2.2.3 | 3.1.1 (dev only) | only `data/dpi_res_matrix.py` |
+| pandas | 2.2.3 | removed | `data/dpi_res_matrix.py` no longer needs it |
 | PyPDF2 | 3.0.1 | **pypdf 7.1.0** | PyPDF2 is end-of-life |
 | ocrmypdf | 16.10.2 | **removed** | 17.x removed `HocrTransform`; code never used it successfully |
 | reportlab | 4.4.1 | 5.1.0 | |
 | psutil | 7.0.0 | 7.2.2 | |
 | nvidia-ml-py3 | 7.352.0 | **nvidia-ml-py 13.615.71** | same `import pynvml`; returns `str` not `bytes` |
 | GPUtil | 1.4.0 | removed | needs `distutils`; NVML already covers it |
-| wmi | 1.5.1 | 1.5.1 (Windows marker) | |
-| pdf2image | 1.17.0 | 1.17.0 | optional fallback |
-| tqdm | 4.67.1 | 4.70.1 | |
-| requests, lxml | undeclared | 2.34.2, 6.1.3 | were used but never listed |
-| pyinstaller / nuitka / pylint / zstandard | in runtime file | 6.22.3 / 4.3.5 / 4.1.4 / 0.25.0 in `requirements-dev.txt` | build tooling |
+| wmi | 1.5.1 | removed | no longer imported |
+| pdf2image | 1.17.0 | removed | replaced by `pypdfium2` (5.14.0, also a hard dependency of doctr) |
+| tqdm | 4.67.1 | removed | only the deleted compressor used it |
+| requests, lxml | undeclared | removed | no longer imported |
+| pypdfium2 | (transitive) | 5.14.0 (declared) | PDF rendering in `core/pdf_input.py` |
+| pillow-heif | - | 1.8.1 (optional, commented) | enables `.heic/.heif`; not covered by tests |
+| pyinstaller / nuitka / pylint / zstandard / pytest | in runtime file | 6.22.3 / 4.3.5 / 4.1.4 / 0.25.0 / 9.2.0 in `requirements-dev.txt` | build and test tooling |
 | python-magic, python-magic-bin, colorama, typing_extensions | listed | removed | never imported |
 
 **CUDA:** PyPI's Windows torch wheel is CPU-only. Install the CUDA build from the PyTorch index first (see header of
-`requirements.txt`). Recent CUDA-13 wheels no longer support Maxwell/Pascal/Volta GPUs; the README's "GTX 1000-series
-maybe works" needs a CUDA 12.x build. (I could not reach `download.pytorch.org` from the analysis sandbox, so confirm
+`requirements.txt`). Recent CUDA-13 wheels no longer support Maxwell/Pascal/Volta GPUs; GTX 1000-series cards need a CUDA 12.x build. The app runs a one-kernel smoke test at start-up and falls back to the CPU (with the reason in the log) if the installed PyTorch cannot run on the GPU. (I could not reach `download.pytorch.org` from the analysis sandbox, so confirm
 which CUDA tags exist for torch 2.14.1.)
 
 Resolver note: I confirmed the declared constraints are mutually compatible (e.g. scipy `numpy<2.8,>=2`,
 opencv-python `numpy>=2`, doctr `numpy<3`); a full `pip install` of the CUDA stack was not run in the sandbox.
 
-## 2. Required code changes
+## 2. Code changes this upgrade required (all done)
 
-### 2.1 Remove the ocrmypdf import — `core/ocr_processor.py:24`
-```python
-- from ocrmypdf.hocrtransform import HocrTransform   # unused name; ImportError on ocrmypdf >= 17
-```
-In `utils/hocr_to_pdf.py` delete the whole "try ocrmypdf" branch (lines 161-176) and have `hocr_to_pdf()` call
-`convert_hocr_to_pdf()` directly. Also drop `ocrmypdf*` from `build.spec` and `build_nuitka.bat`.
+| Change | Where it ended up |
+|--------|-------------------|
+| Remove the `ocrmypdf` import and the "try ocrmypdf" branch | `utils/hocr_to_pdf.py` deleted; PDF writing is `core/pdf_writer.py` (reportlab only) |
+| PyPDF2 `PdfMerger` -> `pypdf.PdfWriter.append` (*verified: `PdfMerger` does not exist in pypdf 7.1.0*) | `core/pdf_writer.merge_pdfs`, `core/pdf_input.apply_text_layers` |
+| Delete the DocTR backend patching (*verified: `doctr/file_utils.py` in 1.1.0 only exports `requires_package` and `CLASS_NAME`*) | `core/doctr_patch.py`, `core/doctr_torch_setup.py` and the `USE_TORCH` / `DOCTR_BACKEND` handling in `main.py` deleted |
+| Delete the CUDA workaround layer | all `core/*cuda*_patch*.py`, `cuda_compat_plugin.py`, `hardware_monitoring_patch.py` deleted |
+| pynvml returns `str` | `core/hardware.HardwareMonitor` (no `.decode()`) |
+| GPUtil removed | NVML via `nvidia-ml-py` only |
+| DocTR model list | read from `doctr.models.detection.zoo.ARCHS` / `recognition.zoo.ARCHS` (`utils/models.py`), with a built-in fallback list |
+| Python 3.12 baseline | `deploy_pyvenv.bat` checks it; CI matrix is 3.12 / 3.13 on Windows; `run_ocr.py` rewritten |
 
-### 2.2 PyPDF2 → pypdf — `core/ocr_processor.py:28,145-155,1009-1019`
-*Verified: PdfMerger does not exist in pypdf 7.1.0; PdfWriter.append merges correctly.*
-```python
-from pypdf import PdfWriter
-w = PdfWriter()
-for pdf in temp_pdfs:
-    w.append(str(pdf))
-w.write(str(output_pdf))
-w.close()
-```
-Update `build.spec` / `build_nuitka.bat` (`PyPDF2` → `pypdf`).
+DocTR 1.1.0 facts the code relies on (read from the 1.1.0 source **and** confirmed by running the real DocTR 1.1.0 on the CPU with random weights; pretrained weights could not be downloaded in the sandbox):
+`ocr_predictor(det_arch=, reco_arch=, pretrained=, assume_straight_pages=)`; the predictor is an `nn.Module` called with a
+list of RGB `numpy` arrays; `Word.geometry` is `((xmin, ymin), (xmax, ymax))` relative to the page (4 points for rotated
+pages); `Document.export_as_xml()` returns one `(bytes, ElementTree)` per page (hOCR); weights are cached in
+`$DOCTR_CACHE_DIR` or `~/.cache/doctr` under `models/<name>-<hash>.pt` (the app sets `DOCTR_CACHE_DIR` to `<app>/doctr_cache` itself - see [configuration.md](configuration.md)); DocTR reads the variable at download time, so setting it before the first model load is enough. Two traps found while testing: `pretrained=False` still downloads *backbone* weights unless `pretrained_backbone=False` is also passed, and `assume_straight_pages=False` downloads an extra crop-orientation model.
 
-### 2.3 Delete the DocTR backend patching
-doctr 1.1.0's `doctr/file_utils.py` only exports `requires_package` and `CLASS_NAME` (*verified*). Remove:
-- `core/doctr_patch.py`, `core/doctr_torch_setup.py` and their imports in `core/__init__.py`, `core/cuda_patch_wrapper.py`;
-- the `doctr_patch` / `doctr_torch_setup` steps and `ENV_VARS_TRUE_VALUES` mock code in `main.py` (lines ~175-205, 267-285);
-- `from doctr.file_utils import is_torch_available, is_tf_available` in `utils/system_diagnostics.py:160`;
-- `USE_TORCH` / `DOCTR_BACKEND` environment variables (harmless, but dead).
-
-### 2.3b Delete the CUDA workaround layer
-With stock PyTorch wheels, remove `core/cuda_env_patch.py`, `cuda_patch_wrapper.py`, `nuitka_cuda_patch.py`,
-`runtime_cuda_patch.py`, `cuda_compat_plugin.py`, `hardware_monitoring_patch.py` and the calls in `main.py:145-173`
-and `ocr_processor.py:6-20`. If a *real* driver/toolkit problem reappears in a compiled build, fix it at the
-packaging level instead of faking `torch.version.cuda` (VL-008, VL-010).
-
-### 2.4 pynvml returns `str`
-`core/ocr_processor.py:97,103`: remove `.decode()` (or `if isinstance(x, bytes)`).
-
-### 2.5 GPUtil
-Remove the fallback in `gui/main_window.py:42-47,1817-1828` and `build*` lists; NVML already provides utilisation and memory.
-
-### 2.6 DocTR model list
-Optionally add `db_resnet34` (detection) and `viptr_tiny` (recognition), new in doctr 1.x. `ocr_predictor` still accepts
-`det_arch`, `reco_arch`, `pretrained`, `assume_straight_pages`; `DocumentFile.from_images`, `export_as_xml` still exist (*verified*).
-Weights still download to `~/.cache/doctr/models` (or `$DOCTR_CACHE_DIR/models`).
-
-### 2.7 Python version fixes
-`run_ocr.py` uses `datetime.UTC` (3.11+). The CI matrix (`.github/workflows/pylint.yml`) should become `["3.12", "3.13"]`
-on `windows-latest`, and `run_pylint.bat`/README "Python 3.10" text should be updated.
-
-### 2.8 Smoke test after upgrading
+### Smoke test after upgrading
 ```bat
-python -c "import torch, doctr, PyQt6, pypdf, reportlab, lxml, pynvml; print(torch.__version__, torch.cuda.is_available(), doctr.__version__)"
+python -m utils.diagnostics
 python verify_models.py
+python -m pytest
 python main.py
 ```
-Then OCR a folder with 3 images and check page count and text selectable in the output PDF.
+Then OCR a folder with 3 images and check the page count and that the text is selectable in the output PDF.
 
-## 3. Optional simplifications enabled by the new stack
+## 3. Simplifications this stack enabled (done)
 
-- **PDF input without Ghostscript/Poppler:** `pypdfium2` ships with doctr; use it to rasterise and overlay the text layer on the original page (VL-016).
-- **Compression without Ghostscript:** encode page images as JPEG with Pillow before embedding (VL-014).
-- **Packaging:** with the patch layer gone, `build.spec` can drop the manual torch/CUDA DLL copying; PyInstaller ships maintained hooks for torch and PyQt6.
+- **PDF input without Ghostscript/Poppler:** `pypdfium2` rasterises pages; the text layer is overlaid on the original pages (VL-016).
+- **Compression without Ghostscript:** page images are JPEG-encoded with Pillow while the PDF is written (VL-014).
+- **Packaging:** with the patch layer gone, `build.spec` no longer copies torch/CUDA DLLs by hand; PyInstaller and Nuitka use their maintained torch/PyQt6 support (untested on Windows - VL-066).

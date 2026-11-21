@@ -43,3 +43,11 @@ temp_files.txt
 temp_module_count.txt
 temp_error_count.txt
 temp_warning_count.txt
+# Local settings and tooling
+config.ini
+.pytest_cache/
+.pylint.d/
+paper_pixels.csv
+portable
+# Downloaded DocTR weights (utils/models.py: configure_cache)
+doctr_cache/

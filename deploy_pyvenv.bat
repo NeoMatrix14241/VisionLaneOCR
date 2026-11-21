@@ -11,7 +11,16 @@ REM Check if Python is available
 python --version >nul 2>nul
 if errorlevel 1 (
     echo ERROR: Python is not installed or not in PATH
-    echo Please install Python 3.8+ and add it to your PATH
+    echo Please install Python 3.12+ and add it to your PATH
+    echo.
+    pause
+    exit /b 1
+)
+
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)"
+if errorlevel 1 (
+    echo ERROR: Python 3.12 or newer is required ^(see requirements.txt^).
+    python --version
     echo.
     pause
     exit /b 1
@@ -74,6 +83,9 @@ echo   .venv\Scripts\activate
 echo.
 echo To run the application with created virtual environment, use:
 echo   .venv\Scripts\python main.py
+echo.
+echo To run the tests ^(needs requirements-dev.txt^):
+echo   .venv\Scripts\python -m pytest
 echo.
 echo Or use the build script:
 echo   build_nuitka.bat --> for nuitka

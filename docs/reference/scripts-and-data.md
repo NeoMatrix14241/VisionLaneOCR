@@ -1,25 +1,33 @@
-# Entry points, scripts, data, CI
+# Entry points, scripts, tests, data, CI
 
-| File | What it does | State |
-|------|--------------|-------|
-| `main.py` | GUI entry: splash → progressive imports → `MainWindow` (see [architecture.md](../architecture.md)) | works; VL-039/040/035 |
-| `run_ocr.py` | Headless batch over `input/images` (`jpg jpeg png tif tiff`) and `input/pdfs` into `output/` | broken (VL-001, VL-051) |
-| `debug_run.py` | Creates `DebugLogger`, then `import main; main.main()` | broken (`main.main` missing) |
-| `verify_models.py` | Downloads `db_resnet50` and `parseq` if no matching file in `~/.cache/doctr/models`; runs at import, no `__main__` guard | works; used by both build scripts |
-| `demo_enhanced_startup.py` | Console + GUI demo of startup features (caching, parallel loader, diagnostics, patches, hardware monitor) | demo only; needs updating for doctr 1.x |
-| `pylint_clean.py` | Strips trailing whitespace in all `.py` files, then runs pylint in parallel into `pylint_cleanup.log` | modifies sources (VL-052) |
-| `run_pylint.bat` (398 lines) | Windows wrapper around pylint with colour output/summary | – |
-| `deploy_pyvenv.bat` | Recreates `.venv`, upgrades pip, installs `requirements.txt` | works (text says Python 3.8+) |
-| `build_pyinstaller.bat`, `build.spec` | PyInstaller one-folder build | VL-048 |
-| `build_nuitka.bat` | Compiler detection, environment report, ~100 `--include-package` flags, post-build DLL copying | VL-049 |
-| `reset_cleanup_temp.bat`, `reset_env_pycache.bat` | housekeeping | fine |
-| `cache_binaries.zip` | ccache 4.11.3 / clcache 4.2.0 for Nuitka builds (7.7 MB) | should be downloaded, not committed |
-| `icon.ico` | application icon | – |
-| `LICENSE` | Apache-2.0 | – |
-| `.github/workflows/pylint.yml` | pylint on push/PR, never fails | VL-050 |
-| `.pylintrc` | 15 KB config; most size/complexity checks disabled | – |
-| `.gitignore` | venv, caches, dist dirs, `logs/`, `input/`, `output/`, `icon/`, `temp_binaries/`… (not `config.ini`) | VL-045 |
+| File | What it does |
+|------|--------------|
+| `main.py` | GUI entry point (see [architecture.md](../architecture.md) 2); `--debug` for verbose logging |
+| `run_ocr.py` | Command line interface on the same `OCRProcessor` API; exit codes 0 / 1 / 2 |
+| `verify_models.py` | Downloads the default models if missing (used by both build scripts); has a `__main__` guard |
+| `deploy_pyvenv.bat` | Recreates `.venv` (requires Python 3.12+), installs `requirements.txt` |
+| `build_pyinstaller.bat`, `build.spec` | PyInstaller build - **untested on Windows** |
+| `build_nuitka.bat` | Nuitka standalone build - **untested on Windows** |
+| `run_pylint.bat` | Read-only pylint run -> `pylint_report.txt` |
+| `reset_cleanup_temp.bat`, `reset_env_pycache.bat` | Remove build output / `.venv` and caches |
+| `pytest.ini`, `.pylintrc` | Test and lint configuration |
+| `.github/workflows/pylint.yml` | CI: pytest + pylint (fail-under 9.0) on Windows, Python 3.12 / 3.13 |
+
+## `tests/`
+| File | Covers |
+|------|--------|
+| `conftest.py` | `FakeEngine` (DocTR-shaped fake), image fixtures, a `torch` stub when torch is not installed |
+| `test_processor.py` | folder/single/PDF workflows, ordering, failures, cancel, progress, HOCR-only, TIFF frames, EXIF, DPI, temp cleanup |
+| `test_pdf_writer.py` | compression effect, JPEG passthrough, odd image modes/characters, DocTR geometry conversion, DPI resolution |
+| `test_archiver.py` | archive rules (confirmed only, cancel, collisions, inside-input refusal) |
+| `test_config.py` | round trip, legacy file migration, invalid values |
+| `test_engine.py` | OOM retry / per-page CPU fallback / session fallback (fake model) |
+| `test_gui.py` | headless MainWindow: end-to-end runs, failures, cancel, validation, settings persistence |
+| `test_paper_sizes.py` | `data/dpi_res_matrix.py` |
+| `test_model_cache.py` | repo-local model cache, legacy copy, `DOCTR_CACHE_DIR` override, unwritable fallback |
+| `test_integration_doctr.py` | real DocTR pipeline with random weights (skipped without DocTR) |
 
 ## `data/`
-- `dpi_res_matrix.py` — embeds an A0–DL paper-size table (150/300/600 dpi), then for each size generates pixel dimensions for DPI 1…9000 and writes `uniform_data.csv` into the current directory. Runs on import. Comment says 1200.
-- `uniform_data.csv` — its output (153 000 rows, 5 MB). **Not read by the application.** It is the groundwork for the roadmap item "uniform paper sizes via super-image" (the referenced `paper_sizes_formula.xlsl` is not in the repo).
+`dpi_res_matrix.py` - paper size table (inches) with `pixels()`, `nearest_paper_size()` and a CSV generator
+(`python data/dpi_res_matrix.py --output paper_pixels.csv`). Not used by the application; groundwork for the
+"uniform paper size" roadmap item (VL-067). The old 5 MB generated CSV is no longer committed.

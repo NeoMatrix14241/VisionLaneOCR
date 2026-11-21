@@ -16,9 +16,7 @@
 # (pick the CUDA tag that matches your driver/GPU; CUDA 13 builds drop pre-Turing GPUs such as GTX 10xx),
 # then run the pip install -r above (already-satisfied pins are kept).
 #
-# NOTE: these versions need the code changes listed in docs/modernization.md
-# (python-doctr 1.x removed TensorFlow support and doctr.file_utils.is_torch_available;
-#  PyPDF2/PdfMerger and ocrmypdf.hocrtransform.HocrTransform no longer exist).
+# See docs/modernization.md for why these versions were chosen.
 # ---------------------------------------------------------------------
 
 # --- OCR engine (PyTorch only since doctr 1.0; there is no "[torch]" extra any more) ---
@@ -35,21 +33,17 @@ PyQt6==6.12.1
 numpy==2.5.5
 Pillow==13.0.0
 
-# --- PDF output ---
-reportlab==5.1.0          # draws the page image + invisible text layer
-pypdf==7.1.0              # replaces PyPDF2 (merging uses PdfWriter.append)
-lxml==6.1.3               # parses the hOCR in utils/hocr_to_pdf.py
-pdf2image==1.17.0         # optional fallback for PDF->image (needs Poppler); prefer pypdfium2 (installed with doctr)
+# --- PDF input / output ---
+reportlab==5.1.0          # core/pdf_writer.py: page image + invisible text layer
+pypdf==7.1.0              # merging and overlaying text on existing PDF pages
+pypdfium2==5.14.0         # core/pdf_input.py: rasterises PDF pages (no Ghostscript / Poppler needed)
 
 # --- System / hardware monitoring ---
 psutil==7.2.2
-nvidia-ml-py==13.615.71   # official NVML bindings (import name: pynvml); replaces nvidia-ml-py3 7.352.0 and GPUtil
-wmi==1.5.1; sys_platform == "win32"
+nvidia-ml-py==13.615.71   # official NVML bindings (import name: pynvml)
 
-# --- Misc ---
-requests==2.34.2          # utils/model_downloader.py
-tqdm==4.70.1              # utils/pypdfcompressor.py
+# --- Optional ---
+# pillow-heif==1.8.1      # enables .heic/.heif input (the app detects it automatically; not covered by the tests)
 
-# Removed (not imported anywhere): torchaudio, python-magic, python-magic-bin, colorama, typing_extensions,
-#   zstandard (build-only, now in requirements-dev.txt), pandas (dev script only), ocrmypdf (import breaks on 17.x and
-#   its HocrTransform path never worked), GPUtil (unmaintained, needs distutils), PyPDF2 (end of life).
+# Removed in the refactor (no longer imported): lxml, pdf2image, requests, tqdm, wmi.
+# Ghostscript is NOT needed any more.

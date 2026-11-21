@@ -1,3 +1,1 @@
-from .main_window import MainWindow
-from .splash_screen import SplashScreen
-__all__ = ['MainWindow', 'SplashScreen']
+"""GUI package. Import submodules explicitly (``gui.main_window``) so that importing ``gui`` stays cheap."""

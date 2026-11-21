@@ -1,8 +1,8 @@
-# Build / lint / helper-script tooling (not needed to run the app)
+# Build / lint / test tooling (not needed to run the app)
 -r requirements.txt
 
+pytest==9.2.0             # python -m pytest
+pylint==4.1.4             # run_pylint.bat / CI
 pyinstaller==6.22.3       # build_pyinstaller.bat / build.spec
 nuitka==4.3.5             # build_nuitka.bat
 zstandard==0.25.0         # Nuitka onefile/compression
-pylint==4.1.4             # run_pylint.bat / CI
-pandas==3.1.1             # data/dpi_res_matrix.py only
