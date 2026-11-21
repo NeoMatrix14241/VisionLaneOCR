@@ -43,7 +43,7 @@ psutil==7.2.2
 nvidia-ml-py==13.615.71   # official NVML bindings (import name: pynvml)
 
 # --- Optional ---
-# pillow-heif==1.8.1      # enables .heic/.heif input (the app detects it automatically; not covered by the tests)
+pillow-heif==1.8.1      # enables .heic/.heif input (the app detects it automatically; not covered by the tests)
 
 # Removed in the refactor (no longer imported): lxml, pdf2image, requests, tqdm, wmi.
 # Ghostscript is NOT needed any more.
