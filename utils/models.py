@@ -54,6 +54,7 @@ def configure_cache() -> Path:
         base = data_dir() / "doctr_cache"
         base.mkdir(parents=True, exist_ok=True)
     os.environ["DOCTR_CACHE_DIR"] = str(base)
+    os.environ.setdefault("HF_HOME", str(base / "huggingface"))   # optional super-resolution model (Hugging Face hub)
     _import_legacy_models(base / "models")
     logger.info("DocTR model cache: %s", base / "models")
     return base

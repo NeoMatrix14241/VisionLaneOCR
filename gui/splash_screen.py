@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QLabel, QProgressBar, QVBoxLayout, QWidget
 
 class StartupSplash(QWidget):
     def __init__(self) -> None:
-        super().__init__(None, Qt.WindowType.SplashScreen | Qt.WindowType.FramelessWindowHint
+        super().__init__(flags=Qt.WindowType.SplashScreen | Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.WindowStaysOnTopHint)
         self.setObjectName("splash")
         self.setStyleSheet(

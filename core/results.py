@@ -35,6 +35,7 @@ class BatchResult:
     files: list[FileResult] = field(default_factory=list)
     cancelled: bool = False
     input_root: Path | None = None
+    warnings: list[str] = field(default_factory=list)   # non-fatal problems (e.g. an optional feature was unavailable)
 
     def count(self, status: Status) -> int:
         return sum(1 for f in self.files if f.status == status)

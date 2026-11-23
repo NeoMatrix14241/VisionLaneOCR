@@ -13,7 +13,8 @@ hiddenimports = (
     + ["pynvml", "pypdfium2", "pypdf", "reportlab.pdfbase._fontdata"]
 )
 
-datas = [("icon.ico", "."), ("LICENSE", "."), ("README.md", ".")]
+datas = [("icon.ico", "."), ("LICENSE", "."), ("README.md", "."),
+         ("assets/fonts", "assets/fonts")]            # DejaVu Sans for the Unicode text layer (core/pdf_writer.py)
 datas += collect_data_files("doctr")
 datas += collect_data_files("reportlab")
 datas += collect_data_files("pypdfium2_raw") + collect_data_files("pypdfium2")

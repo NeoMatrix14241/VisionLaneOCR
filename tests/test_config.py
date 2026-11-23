@@ -11,6 +11,11 @@ def test_roundtrip(tmp_path):
     cfg.input_paths["folder"] = r"D:\scans"
     cfg.archive_enabled["pdf"] = True
     cfg.cpu_threads = 1
+    cfg.straighten_pages = True
+    cfg.page_size = "A4"
+    cfg.enhance_enabled = True
+    cfg.enhance_scale = 3
+    cfg.enhance_min_dpi = 200
     path = tmp_path / "c.ini"
     cfg.save(path)
     again = AppConfig.load(path)
@@ -60,3 +65,12 @@ def test_missing_file_gives_defaults(tmp_path):
 def test_compression_normalization():
     assert [normalize_compression_type(x) for x in ("JPEG", "LZW", "png", "jpeg2000", "??")] == \
         ["jpeg", "lossless", "lossless", "jpeg", "jpeg"]
+
+
+def test_new_page_options_are_validated(tmp_path):
+    path = tmp_path / "c.ini"
+    path.write_text("[General]\npage_size = a3\nenhance_scale = 7\nenhance_min_dpi = 5\nstraighten_pages = maybe\n")
+    cfg = AppConfig.load(path)
+    assert (cfg.page_size, cfg.enhance_scale, cfg.enhance_min_dpi, cfg.straighten_pages) == ("A3", 2, 30, False)
+    path.write_text("[General]\npage_size = nonsense\n")
+    assert AppConfig.load(path).page_size == "original"

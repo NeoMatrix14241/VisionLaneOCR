@@ -3,6 +3,9 @@
 
 pytest==9.2.0             # python -m pytest
 pylint==4.1.4             # run_pylint.bat / CI
+mypy==2.4.1               # run_mypy.bat / CI (settings in mypy.ini)
+types-psutil==7.2.2.20261111
+types-reportlab==5.1.0.20261104
 pyinstaller==6.22.3       # build_pyinstaller.bat / build.spec
 nuitka==4.3.5             # build_nuitka.bat
 zstandard==0.25.0         # Nuitka onefile/compression

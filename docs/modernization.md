@@ -57,7 +57,7 @@ DocTR 1.1.0 facts the code relies on (read from the 1.1.0 source **and** confirm
 `ocr_predictor(det_arch=, reco_arch=, pretrained=, assume_straight_pages=)`; the predictor is an `nn.Module` called with a
 list of RGB `numpy` arrays; `Word.geometry` is `((xmin, ymin), (xmax, ymax))` relative to the page (4 points for rotated
 pages); `Document.export_as_xml()` returns one `(bytes, ElementTree)` per page (hOCR); weights are cached in
-`$DOCTR_CACHE_DIR` or `~/.cache/doctr` under `models/<name>-<hash>.pt` (the app sets `DOCTR_CACHE_DIR` to `<app>/doctr_cache` itself - see [configuration.md](configuration.md)); DocTR reads the variable at download time, so setting it before the first model load is enough. Two traps found while testing: `pretrained=False` still downloads *backbone* weights unless `pretrained_backbone=False` is also passed, and `assume_straight_pages=False` downloads an extra crop-orientation model.
+`$DOCTR_CACHE_DIR` or `~/.cache/doctr` under `models/<name>-<hash>.pt` (the app sets `DOCTR_CACHE_DIR` to `<app>/doctr_cache` itself - see [configuration.md](configuration.md)); DocTR reads the variable at download time, so setting it before the first model load is enough. Two traps found while testing: `pretrained=False` still downloads *backbone* weights unless `pretrained_backbone=False` is also passed, `assume_straight_pages=False` / `straighten_pages=True` download two extra orientation models (page and crop; they can be switched off with `disable_page_orientation` / `disable_crop_orientation`), and `export_as_xml()` raises for rotated (polygon) word geometry - the app exports HOCR from bounding boxes instead.
 
 ### Smoke test after upgrading
 ```bat

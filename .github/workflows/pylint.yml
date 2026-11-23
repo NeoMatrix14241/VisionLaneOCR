@@ -22,5 +22,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest -q
+      - name: Type check (mypy)
+        run: mypy
       - name: Pylint (fails the build below 9.0)
         run: pylint --rcfile=.pylintrc core gui utils data main.py run_ocr.py verify_models.py --fail-under=9.0

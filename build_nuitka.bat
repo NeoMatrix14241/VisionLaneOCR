@@ -47,6 +47,7 @@ echo Building with Nuitka (this takes a while)...
     --include-package-data=pypdfium2 ^
     --include-package-data=pypdfium2_raw ^
     --include-data-files=icon.ico=icon.ico ^
+    --include-data-dir=assets=assets ^
     main.py
 
 if errorlevel 1 (

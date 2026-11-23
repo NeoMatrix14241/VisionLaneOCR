@@ -8,13 +8,17 @@ from utils import models
 @pytest.fixture
 def clean_env(monkeypatch, tmp_path):
     saved = os.environ.pop("DOCTR_CACHE_DIR", None)
+    saved_hf = os.environ.pop("HF_HOME", None)
     monkeypatch.setattr(models, "app_root", lambda: tmp_path / "app")
     monkeypatch.setattr(models, "data_dir", lambda: tmp_path / "userdata")
     monkeypatch.setattr(models.Path, "home", staticmethod(lambda: tmp_path / "home"))
     yield tmp_path
     os.environ.pop("DOCTR_CACHE_DIR", None)
+    os.environ.pop("HF_HOME", None)
     if saved is not None:
         os.environ["DOCTR_CACHE_DIR"] = saved
+    if saved_hf is not None:
+        os.environ["HF_HOME"] = saved_hf
 
 
 def make_legacy(tmp_path):
@@ -32,6 +36,7 @@ def test_default_is_beside_the_app_and_old_models_are_copied(clean_env):
     assert os.environ["DOCTR_CACHE_DIR"] == str(base)
     assert models.doctr_cache_dir() == base / "models"
     assert models.is_cached("db_resnet50") and not models.is_cached("parseq")
+    assert os.environ["HF_HOME"] == str(base / "huggingface")     # optional super-resolution model lives here too
     assert not (base / "models" / "notes.txt").exists()          # only weights are copied
     assert (legacy / "db_resnet50-79bd7d70.pt").exists()          # the old copy is left alone
 

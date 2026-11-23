@@ -13,6 +13,8 @@ import tempfile
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
+from core.paper import normalize_page_size
+
 logger = logging.getLogger(__name__)
 
 DPI_CHOICES = ("Auto", "72", "96", "150", "200", "240", "250", "300", "350", "400", "450", "500",
@@ -47,6 +49,11 @@ class AppConfig:
     compression_type: str = "jpeg"
     compression_quality: int = 85
     skip_text_pages: bool = True
+    straighten_pages: bool = False      # handle rotated / skewed pages (slower, 2 extra models)
+    page_size: str = "original"         # "original", "auto" or a paper name (A4, Letter, ...)
+    enhance_enabled: bool = False       # super-resolution for low-resolution pages (needs `super-image`)
+    enhance_scale: int = 2
+    enhance_min_dpi: int = 150
     # [Paths] - one entry per tab
     input_paths: dict[str, str] = field(default_factory=lambda: {t: "" for t in TABS})
     output_paths: dict[str, str] = field(default_factory=lambda: {t: "" for t in TABS})
@@ -99,6 +106,12 @@ class AppConfig:
         cfg.compression_type = normalize_compression_type(get("General", "compression_type", cfg.compression_type))
         cfg.compression_quality = min(100, max(1, get_int("General", "compression_quality", cfg.compression_quality)))
         cfg.skip_text_pages = get_bool("General", "skip_text_pages", cfg.skip_text_pages)
+        cfg.straighten_pages = get_bool("General", "straighten_pages", cfg.straighten_pages)
+        cfg.page_size = normalize_page_size(get("General", "page_size", cfg.page_size))
+        cfg.enhance_enabled = get_bool("General", "enhance_enabled", cfg.enhance_enabled)
+        scale = get_int("General", "enhance_scale", cfg.enhance_scale)
+        cfg.enhance_scale = scale if scale in (2, 3, 4) else 2
+        cfg.enhance_min_dpi = min(1200, max(30, get_int("General", "enhance_min_dpi", cfg.enhance_min_dpi)))
 
         legacy_archive = get_bool("General", "archive_enabled", False)  # one flag for all tabs (old format)
         for tab in TABS:
@@ -127,6 +140,11 @@ class AppConfig:
             "compression_type": self.compression_type,
             "compression_quality": str(self.compression_quality),
             "skip_text_pages": str(self.skip_text_pages),
+            "straighten_pages": str(self.straighten_pages),
+            "page_size": self.page_size,
+            "enhance_enabled": str(self.enhance_enabled),
+            "enhance_scale": str(self.enhance_scale),
+            "enhance_min_dpi": str(self.enhance_min_dpi),
         }
         for tab in TABS:
             parser["General"][f"archive_enabled_{tab}"] = str(self.archive_enabled.get(tab, False))

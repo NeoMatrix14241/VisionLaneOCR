@@ -63,8 +63,26 @@ if errorlevel 1 (
 )
 
 echo.
+set "REQ_FLAGS=--upgrade"
+if /i "%~1"=="gpu" (
+    if not exist "requirements-torch-gpu.txt" (
+        echo ERROR: requirements-torch-gpu.txt not found
+        pause
+        exit /b 1
+    )
+    echo Installing the CUDA build of PyTorch from requirements-torch-gpu.txt - this is several GB...
+    .venv\Scripts\python.exe -m pip install -r requirements-torch-gpu.txt
+    if errorlevel 1 (
+        echo ERROR: Failed to install the CUDA build of PyTorch
+        echo Check your internet connection and the CUDA tag in requirements-torch-gpu.txt
+        pause
+        exit /b 1
+    )
+    REM no --upgrade here: it could replace the CUDA build by a newer CPU wheel from PyPI
+    set "REQ_FLAGS="
+)
 echo Installing requirements from requirements.txt...
-.venv\Scripts\python.exe -m pip install -r requirements.txt --upgrade
+.venv\Scripts\python.exe -m pip install -r requirements.txt %REQ_FLAGS%
 if errorlevel 1 (
     echo ERROR: Failed to install requirements
     echo Please check your requirements.txt file and internet connection
@@ -80,6 +98,8 @@ echo ========================================
 echo.
 echo To activate the virtual environment manually, run:
 echo   .venv\Scripts\activate
+echo.
+echo For an NVIDIA GPU run this script as:  deploy_pyvenv.bat gpu   ^(installs the CUDA build of PyTorch^)
 echo.
 echo To run the application with created virtual environment, use:
 echo   .venv\Scripts\python main.py

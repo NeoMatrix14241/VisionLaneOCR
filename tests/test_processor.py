@@ -232,3 +232,39 @@ def test_exif_rotated_jpeg_gets_upright_page_geometry(tmp_path):
     assert engine.calls == [(100, 200)]   # OCR saw the upright (portrait) image ...
     page = PdfReader(str(next((result.session_dir / "pdf").rglob("*.pdf")))).pages[0]
     assert float(page.mediabox.height) > float(page.mediabox.width)   # ... and so does the PDF page
+
+
+def test_rotated_words_survive_into_the_pdf_and_hocr_export_uses_straight_boxes(tmp_path, make_image):
+    """FakeEngine returns polygon geometry (as DocTR does in rotated-page mode)."""
+    from types import SimpleNamespace
+    from tests.conftest import FakeDocument
+
+    class RotatedDocument(FakeDocument):
+        def __init__(self, text):
+            super().__init__(text)
+            quad = ((0.2, 0.8), (0.2, 0.4), (0.3, 0.4), (0.3, 0.8))          # text reading upwards
+            word = SimpleNamespace(value="UP", geometry=quad)
+            line = SimpleNamespace(words=[word], geometry=quad)
+            self.pages = [SimpleNamespace(blocks=[SimpleNamespace(lines=[line], geometry=quad, artefacts=[])])]
+            self.seen_geometries = []
+
+        def export_as_xml(self):
+            word = self.pages[0].blocks[0].lines[0].words[0]
+            self.seen_geometries.append(word.geometry)
+            return [(b"<html/>", None)]
+
+    class RotatedEngine(FakeEngine):
+        def predict(self, images):
+            self.document = RotatedDocument("x")
+            return self.document
+
+    engine = RotatedEngine()
+    p = OCRProcessor(engine=engine)
+    p.configure(output_formats=["pdf", "hocr"])
+    result = p.process_file(make_image(tmp_path / "a.png", (200, 100)), tmp_path / "out")
+    assert result.ok, result.failure_lines()
+    assert engine.document.seen_geometries == [((0.2, 0.4), (0.3, 0.8))]     # hOCR got straight boxes
+    runs = []
+    PdfReader(str(next((result.session_dir / "pdf").glob("*.pdf")))).pages[0].extract_text(
+        visitor_text=lambda text, cm, tm, font, size: runs.append(tm) if text.strip() else None)
+    assert round(float(runs[0][1]), 3) == 1.0 and round(float(runs[0][0]), 3) == 0.0     # PDF text is rotated 90

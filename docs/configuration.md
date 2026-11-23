@@ -24,6 +24,11 @@ fall back to defaults). Settings are saved when you click *Start Processing*, *F
 | `compression_type` | `jpeg`, `lossless` | `jpeg` | legacy `jpeg2000` -> `jpeg`; `lzw`, `png` -> `lossless` |
 | `compression_quality` | 1-100 | `85` | JPEG quality (ignored for `lossless`) |
 | `skip_text_pages` | bool | `True` | PDF input: do not re-OCR pages that already contain text (ignored when HOCR output is requested) |
+| `straighten_pages` | bool | `False` | rotated / skewed page handling (slower; two extra DocTR models are downloaded on first use) |
+| `page_size` | `original`, `auto`, or a paper name (`A4`, `Letter`, `Legal`, `A3`, ...; case-insensitive) | `original` | image inputs: every page of a folder gets the same paper size (image scaled to fit, orientation kept) |
+| `enhance_enabled` | bool | `False` | super-resolution for low-resolution pages (needs the optional `super-image` package; ignored with a note if missing) |
+| `enhance_scale` | 2, 3, 4 | `2` | upscaling factor |
+| `enhance_min_dpi` | 30-1200 | `150` | pages whose effective resolution on the chosen paper is below this are enhanced |
 | `archive_enabled_single` / `_folder` / `_pdf` | bool | `False` | per tab. A legacy single `archive_enabled` applies to all three tabs |
 
 ## `[Paths]`
@@ -48,6 +53,7 @@ fall back to defaults). Settings are saved when you click *Start Processing*, *F
 | `<data dir>/logs/visionlane_<timestamp>.log` | one file per session; the newest 20 are kept |
 | `<data dir>/logs/crash.log` | native crash tracebacks (`faulthandler`) |
 | `%TEMP%\VisionLaneOCR_*` | private scratch folder of a running job; removed when the job ends |
+| `<app folder>/doctr_cache/huggingface/` | Hugging Face cache (`HF_HOME`), used only by the optional super-resolution model |
 | `<app folder>/doctr_cache/models/*.pt` | DocTR weights (`<name>-<hash>.pt`); git-ignored. Falls back to `<data dir>/doctr_cache` if the app folder is not writable, or to `$DOCTR_CACHE_DIR/models` if that is set |
 
 ## Environment variables

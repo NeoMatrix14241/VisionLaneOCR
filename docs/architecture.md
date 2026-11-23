@@ -11,9 +11,10 @@ repo
 ├── core/                OCR engine, orchestration, PDF reading/writing, archiving (no Qt)
 ├── gui/                 PyQt6 window, input tabs, background workers, theme, dialogs
 ├── utils/               config, paths, logging, model catalogue, diagnostics
-├── data/                paper-size table (groundwork for the "uniform paper size" roadmap item)
+├── assets/fonts/        DejaVu Sans (+ licence): Unicode text layer for non-WinAnsi pages
+├── data/                CSV generator for the paper-size table (the table itself is core/paper.py)
 ├── tests/               pytest suite (headless)
-└── build.spec, build_*.bat, .github/workflows/pylint.yml
+└── build.spec, build_*.bat, mypy.ini, .github/workflows/pylint.yml
 ```
 
 ## 1. Layers
@@ -82,17 +83,24 @@ flowchart TD
     J --> K["GUI: summary dialog, archive confirmed inputs"]
 ```
 
-### 3.1 One image page (`OCRProcessor._ocr_page`)
+### 3.1 One image page (`OCRProcessor._process_image_group`)
 1. `_open_frames`: Pillow opens the file; every frame of a multi-frame TIFF is a page; EXIF orientation applied; DPI = user value, else image metadata (30-4800), else 300.
-2. The image is converted to an RGB array and passed to `OCREngine.predict()` (`torch.inference_mode()`; CUDA OOM recovery, see below).
-3. The DocTR result is converted to `OcrPage` (words in pixel coordinates) for the PDF and, if requested, exported with `export_as_xml()` as HOCR.
-4. `pdf_writer.write_image_page_pdf`: page size = pixels x 72 / dpi; the image is embedded (JPEG-recompressed at the chosen quality, Flate for lossless, or the original JPEG bytes if nothing changes); the text is drawn invisibly (render mode 3), each word scaled to its box.
+2. `_prepare_frame`: **page size** - the group's paper (`_group_paper_name`: a fixed paper, or for *Auto* the paper most pages are nearest to) is chosen with the page's orientation; **enhancement** - if enabled and the page's *effective* resolution on that paper is below `enhance_min_dpi`, the image is upscaled by `core/enhance.py` (tiled super-resolution) and its DPI multiplied so the physical size is unchanged. A missing package / failing model switches enhancement off for the run and adds a warning to the result.
+3. The image is converted to an RGB array and passed to `OCREngine.predict()` (`torch.inference_mode()`; CUDA OOM recovery, see 3.3).
+4. The DocTR result is converted to `OcrPage` (words in pixel coordinates; rotated words keep their 4 corners) for the PDF. For HOCR, polygon geometries are first replaced by bounding boxes (DocTR's exporter only accepts those) and `export_as_xml()` is called.
+5. `pdf_writer.write_image_page_pdf`: page size = pixels x 72 / dpi, **or the chosen paper** with the image scaled to fit and centred; the image is embedded (JPEG-recompressed at the chosen quality, Flate for lossless, or the original JPEG bytes if nothing changes); the text is drawn invisibly (render mode 3): straight words scaled to their box, rotated words with a rotated text matrix, in Helvetica - or in embedded DejaVu Sans on pages that contain characters Helvetica cannot encode.
 
 ### 3.2 PDF input (`core/pdf_input.py`)
 `PdfSource` (pypdfium2) reports the page count, whether a page already has text (>= 20 characters) and renders a page at
 the chosen DPI (default 300, capped at 40 megapixels). After OCR, `apply_text_layers` clones the source with pypdf and
 merges one text-only overlay page per recognised page (the cropbox offset and `/Rotate` are handled). Pages that were
 skipped, or failed, are copied unchanged, so the output always has every page of the input.
+
+### 3.2a Rotated / skewed pages (`straighten_pages`)
+`OCREngine` builds the predictor with `assume_straight_pages=False, straighten_pages=True, preserve_original_coords=True`.
+DocTR rotates/deskews a copy of the page for recognition and maps every word box back onto the **original** page as a
+4-point polygon (corners in reading order), so the scan itself is never modified and the text layer lines up with it.
+This needs DocTR's page- and crop-orientation models (downloaded on first use) and is slower, so it is off by default.
 
 ### 3.3 Out-of-memory handling (`core/ocr_engine.py`)
 `predict` -> on CUDA OOM: `empty_cache()`, retry on the GPU -> still OOM: run **this call** on the CPU and move the model
@@ -134,5 +142,12 @@ A cancelled run does not write the merged PDF of the folder that was in progress
 | `count-files` (daemon) | counting images/PDFs in a selected folder |
 
 All are plain `threading.Thread` daemons wrapped in `gui.workers.Task`; results come back to the GUI thread as Qt signals.
-Cancellation is cooperative (`threading.Event`), checked between pages and files; a page that is already in inference
-finishes first (VL-065).
+
+**Lifetime rules** (a violation is a crash, not an exception): a `Task` has no Qt parent (a widget could otherwise delete it
+under a running thread) and its signals are connected to *bound methods of QObjects*, never to lambdas (Qt disconnects those
+when the receiver is destroyed); slots invoked from timers must not raise (PyQt6 aborts the process).
+
+**Cancellation** is cooperative (`threading.Event`), checked between pages and files, and - during recognition - before
+every model forward pass: `OCREngine` registers a forward pre-hook on DocTR's detection, recognition and orientation
+networks that raises `Cancelled` when the flag is set, so Cancel acts between model stages and recognition batches. A single
+forward pass that has already started still finishes (VL-065).

@@ -23,7 +23,7 @@ import logging
 import sys
 import tempfile
 import threading
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -33,9 +33,12 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from . import pdf_input
+from .enhance import SuperResolution, Upscaler, super_resolution_available
+from .errors import Cancelled
 from .constants import (DEFAULT_DETECTION_MODEL, DEFAULT_RECOGNITION_MODEL, image_extensions, is_image, is_pdf,
                         natural_key)
-from .pdf_writer import (OcrPage, merge_pdfs, normalize_for_pdf, ocr_page_from_doctr, resolve_dpi,
+from .paper import AUTO, AUTO_MAX_ERROR, ORIGINAL, nearest_paper_size, normalize_page_size, paper_size_pt
+from .pdf_writer import (OcrPage, effective_dpi, merge_pdfs, normalize_for_pdf, ocr_page_from_doctr, resolve_dpi,
                          write_image_page_pdf)
 from .results import BatchResult, FileResult, ProgressEvent, Status
 
@@ -49,10 +52,7 @@ Image.MAX_IMAGE_PIXELS = 400_000_000
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[ProgressEvent], None]
-
-
-class Cancelled(Exception):
-    """Raised internally to unwind when :meth:`OCRProcessor.cancel` was called."""
+UpscalerFactory = Callable[[int, str], Upscaler]   # (scale, device) -> upscaler
 
 
 @dataclass
@@ -88,6 +88,27 @@ def _empty_cuda_cache() -> None:
         torch.cuda.empty_cache()
 
 
+def _use_straight_boxes(page) -> None:
+    """Replace rotated (polygon) geometries by their bounding boxes, in place (needed for hOCR export)."""
+    def straighten(element) -> None:
+        geometry = getattr(element, "geometry", None)
+        if geometry is None:
+            return
+        points = np.asarray(geometry, dtype=float).reshape(-1, 2)
+        if points.shape[0] > 2:
+            (x0, y0), (x1, y1) = points.min(axis=0), points.max(axis=0)
+            element.geometry = ((float(x0), float(y0)), (float(x1), float(y1)))
+
+    for block in page.blocks:
+        straighten(block)
+        for artefact in getattr(block, "artefacts", []):
+            straighten(artefact)
+        for line in block.lines:
+            straighten(line)
+            for word in line.words:
+                straighten(word)
+
+
 def _to_rgb_array(image: Image.Image) -> np.ndarray:
     return np.asarray(normalize_for_pdf(image).convert("RGB"))
 
@@ -97,12 +118,15 @@ class OCRProcessor:
 
     def __init__(self, detection_model: str = DEFAULT_DETECTION_MODEL,
                  recognition_model: str = DEFAULT_RECOGNITION_MODEL, device: str = "auto", *,
-                 pretrained: bool = True, cpu_threads: int = 0, engine: OCREngine | None = None):
+                 pretrained: bool = True, cpu_threads: int = 0, straighten_pages: bool = False,
+                 engine: OCREngine | None = None, upscaler_factory: UpscalerFactory | None = None):
         if engine is None:
             from .ocr_engine import OCREngine  # pylint: disable=import-outside-toplevel
             engine = OCREngine(detection_model, recognition_model, device, pretrained=pretrained,
-                               cpu_threads=cpu_threads)
+                               cpu_threads=cpu_threads, straighten_pages=straighten_pages)
         self.engine = engine
+        # lets a cancel request interrupt inference between model stages / batches (see OCREngine)
+        self.engine.cancel_check = self._cancel_requested
         # settings (see configure())
         self.output_formats: list[str] = ["pdf"]
         self.dpi: int | None = None
@@ -110,6 +134,15 @@ class OCRProcessor:
         self.compression_type = "jpeg"
         self.compression_quality = 85
         self.skip_text_pages = True
+        self.page_size = ORIGINAL           # "original", "auto" or a paper name (core.paper) - image inputs only
+        self.enhance_enabled = False        # super-resolution for pages that end up below enhance_min_dpi
+        self.enhance_scale = 2
+        self.enhance_min_dpi = 150
+        self.upscaler_factory = upscaler_factory
+        self._upscaler: Upscaler | None = None
+        self._upscaler_key: tuple[int, str] | None = None
+        self._enhance_off = False
+        self._warnings: list[str] = []
         self.progress_callback: ProgressCallback | None = None
         self._cancel = threading.Event()
         self._claimed: set[Path] = set()
@@ -117,7 +150,9 @@ class OCRProcessor:
     # ------------------------------------------------------------------ settings / control
     def configure(self, *, output_formats: Sequence[str] | None = None, dpi: int | None | str = "keep",
                   compress_enabled: bool | None = None, compression_type: str | None = None,
-                  compression_quality: int | None = None, skip_text_pages: bool | None = None) -> None:
+                  compression_quality: int | None = None, skip_text_pages: bool | None = None,
+                  page_size: str | None = None, enhance_enabled: bool | None = None,
+                  enhance_scale: int | None = None, enhance_min_dpi: int | None = None) -> None:
         if output_formats is not None:
             formats = [f.lower() for f in output_formats]
             if not formats or any(f not in ("pdf", "hocr") for f in formats):
@@ -133,6 +168,16 @@ class OCRProcessor:
             self.compression_quality = max(1, min(100, int(compression_quality)))
         if skip_text_pages is not None:
             self.skip_text_pages = bool(skip_text_pages)
+        if page_size is not None:
+            self.page_size = normalize_page_size(page_size)
+        if enhance_enabled is not None:
+            self.enhance_enabled = bool(enhance_enabled)
+        if enhance_scale is not None:
+            if enhance_scale not in (2, 3, 4):
+                raise ValueError("enhance_scale must be 2, 3 or 4")
+            self.enhance_scale = enhance_scale
+        if enhance_min_dpi is not None:
+            self.enhance_min_dpi = max(30, int(enhance_min_dpi))
 
     @property
     def device(self) -> str:
@@ -144,8 +189,16 @@ class OCRProcessor:
     def set_device(self, preference: str) -> bool:
         return self.engine.set_device_preference(preference)
 
+    def set_straighten(self, enabled: bool) -> bool:
+        """Handle rotated / skewed pages (slower; loads two extra DocTR models)."""
+        return self.engine.set_straighten(enabled)
+
+    def _cancel_requested(self) -> bool:
+        return self._cancel.is_set()
+
     def cancel(self) -> None:
-        """Request cancellation. Takes effect between pages (a page already in inference finishes first)."""
+        """Request cancellation. Takes effect between pages and, during recognition, between model
+        stages/batches (a single model forward pass that has already started still finishes)."""
         self._cancel.set()
 
     @property
@@ -191,6 +244,8 @@ class OCRProcessor:
         self._cancel.clear()
         self._claimed = set()
         result = BatchResult(input_root=root)
+        self._warnings = result.warnings
+        self._enhance_off = False
         total = len(inputs)
         if not total:
             logger.warning("No supported files found")
@@ -281,10 +336,70 @@ class OCRProcessor:
         document = self.engine.predict([array])
         page = document.pages[0]
         height, width = array.shape[:2]
+        ocr = ocr_page_from_doctr(page, width, height)   # keeps rotated word corners for the PDF text layer
         hocr = None
         if "hocr" in self.output_formats:
+            _use_straight_boxes(page)                    # DocTR's hOCR exporter only accepts straight boxes
             hocr = document.export_as_xml()[0][0]
-        return ocr_page_from_doctr(page, width, height), hocr
+        return ocr, hocr
+
+    # ------------------------------------------------------------------ page size / enhancement
+    def _group_paper_name(self, files: list[Path]) -> str | None:
+        """Paper size for all pages of an image folder (``None`` = keep each page's own size)."""
+        if self.page_size == ORIGINAL:
+            return None
+        if self.page_size != AUTO:
+            return self.page_size
+        votes: Counter[str] = Counter()
+        for path in files:
+            try:
+                with Image.open(path) as img:
+                    name, error = nearest_paper_size(img.width, img.height, resolve_dpi(self.dpi, img))
+            except Exception:  # pylint: disable=broad-except
+                continue  # unreadable files are reported later, when they are processed
+            if error <= AUTO_MAX_ERROR:
+                votes[name] += 1
+        return votes.most_common(1)[0][0] if votes else None
+
+    def _warn(self, message: str) -> None:
+        logger.warning(message)
+        if message not in self._warnings:
+            self._warnings.append(message)
+
+    def _get_upscaler(self) -> Upscaler | None:
+        key = (self.enhance_scale, self.engine.device)
+        if self._upscaler is None or self._upscaler_key != key:
+            try:
+                if self.upscaler_factory is not None:
+                    self._upscaler = self.upscaler_factory(*key)
+                elif super_resolution_available():
+                    self._upscaler = SuperResolution(scale=key[0], device="cuda" if key[1] == "cuda" else "cpu")
+                else:
+                    raise RuntimeError("the optional 'super-image' package is not installed (pip install super-image)")
+                self._upscaler_key = key
+            except Exception as exc:  # pylint: disable=broad-except
+                self._enhance_off = True
+                self._warn(f"Image enhancement was skipped: {exc}")
+                return None
+        return self._upscaler
+
+    def _prepare_frame(self, frame: _Frame, paper_name: str | None
+                       ) -> tuple[Image.Image, int, Path | None, tuple[float, float] | None]:
+        """Apply the page-size target and (if needed) super-resolution. Returns image, dpi, passthrough, paper."""
+        width, height = frame.image.size
+        paper_pt = paper_size_pt(paper_name, landscape=width > height) if paper_name else None
+        image, dpi, passthrough = frame.image, frame.dpi, frame.passthrough
+        if self.enhance_enabled and not self._enhance_off \
+                and effective_dpi(width, height, dpi, paper_pt) < self.enhance_min_dpi:
+            upscaler = self._get_upscaler()
+            if upscaler is not None:
+                try:
+                    image = upscaler.upscale(frame.image)
+                    dpi, passthrough = dpi * upscaler.scale, None
+                except Exception as exc:  # pylint: disable=broad-except
+                    self._enhance_off = True
+                    self._warn(f"Image enhancement failed and was switched off for this run: {exc}")
+        return image, dpi, passthrough, paper_pt
 
     def _process_image_group(self, files: list[Path], folder: Path, root: Path | None, session: Path,
                              tmp_dir: Path, done: int, total: int) -> list[FileResult]:
@@ -295,6 +410,7 @@ class OCRProcessor:
         page_pdfs: list[Path] = []
         results: list[FileResult] = []
         compress = self.compression_type if self.compress_enabled else None
+        paper_name = self._group_paper_name(files)
 
         for offset, path in enumerate(files):
             self._check_cancel()
@@ -307,14 +423,16 @@ class OCRProcessor:
                     res.pages_total += 1
                     self._emit(done + offset, total, path, "ocr", frame.index - 1, frame.count)
                     try:
-                        ocr, hocr = self._ocr_page(frame.image)
+                        image, dpi, passthrough, paper_pt = self._prepare_frame(frame, paper_name)
+                        ocr, hocr = self._ocr_page(image)
                         if want_hocr and hocr is not None:
                             res.outputs.append(self._write_hocr(hocr, session, rel, path, frame, files))
                         if want_pdf:
                             self._emit(done + offset, total, path, "writing", frame.index, frame.count)
                             page_pdf = tmp_dir / f"{len(page_pdfs):06d}.pdf"
-                            write_image_page_pdf(page_pdf, frame.image, ocr, frame.dpi, compress_type=compress,
-                                                 quality=self.compression_quality, passthrough=frame.passthrough)
+                            write_image_page_pdf(page_pdf, image, ocr, dpi, compress_type=compress,
+                                                 quality=self.compression_quality, passthrough=passthrough,
+                                                 paper_pt=paper_pt)
                             page_pdfs.append(page_pdf)
                         res.pages_ok += 1
                     except Cancelled:
@@ -342,6 +460,7 @@ class OCRProcessor:
 
         if want_pdf:  # merge once the whole folder is finished (no polling, no trigger-by-last-file)
             self._emit(done + len(files), total, folder, "merging")
+            assert pdf_path is not None  # want_pdf implies a target path
             if page_pdfs:
                 try:
                     merge_pdfs(page_pdfs, pdf_path)

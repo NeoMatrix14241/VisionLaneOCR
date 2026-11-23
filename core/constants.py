@@ -16,7 +16,7 @@ def heif_available() -> bool:
     global _heif_registered  # pylint: disable=global-statement
     if _heif_registered is None:
         try:
-            from pillow_heif import register_heif_opener  # type: ignore[import-not-found]  # pylint: disable=import-error
+            from pillow_heif import register_heif_opener  # pylint: disable=import-error
             register_heif_opener()
             _heif_registered = True
         except Exception:  # pylint: disable=broad-except

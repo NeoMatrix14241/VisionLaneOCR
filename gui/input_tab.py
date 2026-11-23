@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (QCheckBox, QFileDialog, QGridLayout, QLabel, QLineEdit, QPushButton,
@@ -16,12 +17,12 @@ _BTN_STYLE = "QPushButton { font-size: 10pt; padding: 1px 10px; min-height: 25px
 class InputTab(QWidget):
     """``kind`` is ``single``, ``folder`` or ``pdf``."""
 
-    changed = pyqtSignal()
+    changed = pyqtSignal(arguments=[])
 
     TITLES = {"single": "Select Input File", "folder": "Select Input Folder", "pdf": "Select Input PDF"}
 
-    def __init__(self, kind: str, parent: QWidget | None = None):
-        super().__init__(parent)
+    def __init__(self, kind: str):
+        super().__init__()  # the parent is set by QTabWidget.addTab
         self.kind = kind
         self._input: Path | None = None
         self._auto_archive = ""
@@ -94,15 +95,15 @@ class InputTab(QWidget):
         folder = self._input
         if self.kind != "folder" or folder is None or not folder.is_dir():
             return
-        task = Task(lambda: count_supported_files(folder), "count-files", self)
+        task = Task(lambda: count_supported_files(folder), "count-files")
         self._count_task = task
-
-        def done(counts: dict) -> None:
-            if self._input == folder:  # ignore stale results
-                self.input_label.setText(f"Selected: {folder}\nFound: {counts['images']} images, {counts['pdfs']} PDFs")
-
-        task.succeeded.connect(done)
+        task.succeeded.connect(self._on_count_done)   # bound slot: auto-disconnected if this tab is destroyed
         task.start()
+
+    def _on_count_done(self, outcome: object) -> None:
+        folder, counts = cast("tuple[Path, dict[str, int]]", outcome)
+        if self._input == folder:  # ignore stale results
+            self.input_label.setText(f"Selected: {folder}\nFound: {counts['images']} images, {counts['pdfs']} PDFs")
 
     # ------------------------------------------------------------------ dialogs
     def _select_input(self) -> None:

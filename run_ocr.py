@@ -28,6 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--det", default=DEFAULT_DETECTION_MODEL, help="detection model")
     p.add_argument("--reco", default=DEFAULT_RECOGNITION_MODEL, help="recognition model")
     p.add_argument("--no-skip-text", action="store_true", help="OCR PDF pages even if they already contain text")
+    p.add_argument("--page-size", default="original",
+                   help="original | auto | A4 | Letter | ... : give all pages of an image folder the same paper size")
+    p.add_argument("--enhance", action="store_true", help="super-resolution for low-resolution pages (pip install super-image)")
+    p.add_argument("--enhance-scale", type=int, choices=[2, 3, 4], default=2)
+    p.add_argument("--enhance-min-dpi", type=int, default=150)
+    p.add_argument("--straighten", action="store_true", help="handle rotated / skewed pages (slower, extra models)")
     p.add_argument("--archive", type=Path, default=None, help="move successfully processed inputs here")
     p.add_argument("--verbose", action="store_true")
     return p
@@ -50,10 +56,12 @@ def main(argv: list[str] | None = None) -> int:
         if not models.is_cached(name):
             models.download(kind, name)
 
-    processor = OCRProcessor(args.det, args.reco, args.device)
+    processor = OCRProcessor(args.det, args.reco, args.device, straighten_pages=args.straighten)
     processor.configure(output_formats=args.formats, dpi=args.dpi, compress_enabled=args.compress is not None,
                         compression_type=args.compress or "jpeg", compression_quality=args.quality,
-                        skip_text_pages=not args.no_skip_text)
+                        skip_text_pages=not args.no_skip_text, page_size=args.page_size,
+                        enhance_enabled=args.enhance, enhance_scale=args.enhance_scale,
+                        enhance_min_dpi=args.enhance_min_dpi)
     processor.progress_callback = lambda e: None
     try:
         result = (processor.process_folder(args.input, args.output) if args.input.is_dir()
@@ -66,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
     print(result.summary())
     for line in result.failure_lines():
         print("FAILED:", line, file=sys.stderr)
+    for warning in result.warnings:
+        print("NOTE:", warning, file=sys.stderr)
     if result.session_dir:
         print("Output:", result.session_dir)
     if args.archive and result.total:

@@ -39,9 +39,11 @@ class FakeDocument:
 
 class FakeEngine:
     device = "cpu"
+    gpu = None
     gpu_name = ""
     detection_model = "db_resnet50"
     recognition_model = "parseq"
+    straighten_pages = False
     report = SimpleNamespace(warnings=[])
 
     def __init__(self, fail_heights: tuple[int, ...] = ()):
@@ -65,6 +67,11 @@ class FakeEngine:
 
     def set_cpu_threads(self, *_):
         pass
+
+    def set_straighten(self, enabled):
+        changed = enabled != self.straighten_pages
+        self.straighten_pages = enabled
+        return changed
 
     def set_device_preference(self, *_):
         return False

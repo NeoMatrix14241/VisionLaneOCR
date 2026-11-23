@@ -33,7 +33,7 @@ def wait_until(app, condition, timeout=10.0):
 @pytest.fixture
 def window(qapp, tmp_path, monkeypatch):
     import gui.main_window as mw
-    monkeypatch.setattr(mw, "OCRProcessor", lambda det, reco, device, cpu_threads=0: OCRProcessor(engine=FakeEngine()))
+    monkeypatch.setattr(mw, "OCRProcessor", lambda det, reco, device, cpu_threads=0, **_kw: OCRProcessor(engine=FakeEngine()))
     monkeypatch.setattr(mw.model_utils, "is_cached", lambda name: True)
     shown = []
     monkeypatch.setattr(QMessageBox, "exec", lambda self: shown.append((self.windowTitle(), self.text(), self.detailedText())) or 0)
@@ -156,3 +156,55 @@ def test_screenshot_for_review(qapp, window, tmp_path):
         window.resize(900, 520)
         qapp.processEvents()
         window.grab().save(out)
+
+
+def test_page_handling_options_reach_the_processor_and_are_saved(qapp, window, tmp_path, make_image):
+    make_image(tmp_path / "in" / "a.png", (1654, 2339))
+    window.tabs.setCurrentIndex(1)
+    tab = window.input_tabs["folder"]
+    tab.set_input(tmp_path / "in")
+    tab.output_edit.setText(str(tmp_path / "out"))
+    window.page_size_combo.setCurrentIndex(window.page_size_combo.findData("A4"))
+    window.start_button.click()
+    assert wait_until(qapp, lambda: window.job is None)
+    assert window.shown[-1][0] == "Success"
+    assert window.processor.page_size == "A4" and window.processor.enhance_enabled is False
+    pdf = next((tmp_path / "out").glob("OCR_Session_*/pdf/*.pdf"))
+    from pypdf import PdfReader
+    assert round(float(PdfReader(str(pdf)).pages[0].mediabox.width), 2) == 595.44
+    window.close()
+    assert AppConfig.load(window.config_path).page_size == "A4"
+
+
+def test_straighten_toggle_reloads_the_engine_in_the_background(qapp, window):
+    assert window.processor.engine.straighten_pages is False
+    window.straighten_check.setChecked(True)
+    assert not window.start_button.isEnabled() and "orientation" in window.current_label.text()
+    assert wait_until(qapp, lambda: window.start_button.isEnabled())
+    assert window.processor.engine.straighten_pages is True
+    window.close()
+    assert AppConfig.load(window.config_path).straighten_pages is True
+
+
+def test_enhance_checkbox_reflects_whether_super_image_is_installed(qapp, window):
+    from core.enhance import super_resolution_available
+    assert window.enhance_check.isEnabled() == super_resolution_available()
+    if not super_resolution_available():
+        assert "pip install super-image" in window.enhance_check.toolTip()
+
+
+def test_processor_warnings_are_shown_in_the_summary(qapp, window, tmp_path, make_image, monkeypatch):
+    import core.ocr_processor as module
+    monkeypatch.setattr(module, "super_resolution_available", lambda: False)
+    window.enhance_check.setEnabled(True)            # force the option on although the package is missing
+    window.enhance_check.setChecked(True)
+    make_image(tmp_path / "in" / "a.png", (400, 500))
+    window.dpi_combo.setCurrentText("96")
+    window.tabs.setCurrentIndex(1)
+    tab = window.input_tabs["folder"]
+    tab.set_input(tmp_path / "in")
+    tab.output_edit.setText(str(tmp_path / "out"))
+    window.start_button.click()
+    assert wait_until(qapp, lambda: window.job is None)
+    title, text, _ = window.shown[-1]
+    assert title == "Success" and "pip install super-image" in text

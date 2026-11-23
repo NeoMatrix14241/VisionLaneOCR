@@ -3,6 +3,13 @@
 Plain daemon ``threading.Thread`` s are used (not ``QThread``/``QRunnable``): a daemon thread can never
 keep the process alive or trigger "QThread destroyed while running" on shutdown. Signals emitted from
 these threads are delivered to the GUI thread through Qt's queued connections.
+
+Lifetime rules (a violation shows up as a crash, not as an exception):
+
+* a :class:`Task` has **no Qt parent** - if a widget owned it, Qt could delete it while its thread still
+  emits signals; the Python reference held by the running thread keeps it alive instead;
+* connect ``succeeded`` / ``failed`` to **bound methods of a QObject**, not to lambdas: Qt disconnects those
+  automatically when the receiver is destroyed, whereas a lambda would run against a deleted widget.
 """
 from __future__ import annotations
 
@@ -24,11 +31,11 @@ logger = logging.getLogger(__name__)
 class Task(QObject):
     """Run ``fn()`` on a background thread; emit ``succeeded(result)`` or ``failed(message)``."""
 
-    succeeded = pyqtSignal(object)
-    failed = pyqtSignal(str)
+    succeeded = pyqtSignal(object, arguments=["result"])
+    failed = pyqtSignal(str, arguments=["message"])
 
-    def __init__(self, fn: Callable[[], object], name: str = "task", parent: QObject | None = None):
-        super().__init__(parent)
+    def __init__(self, fn: Callable[[], object], name: str = "task"):
+        super().__init__()
         self._fn = fn
         self._name = name
         self._thread: threading.Thread | None = None
@@ -59,11 +66,10 @@ class OCRJob(Task):
     """One OCR run. ``progress`` carries :class:`core.results.ProgressEvent`; ``succeeded`` carries the
     :class:`core.results.BatchResult` (also for runs with failed files - they are *results*)."""
 
-    progress = pyqtSignal(object)
+    progress = pyqtSignal(object, arguments=["event"])
 
-    def __init__(self, processor: OCRProcessor, mode: str, path: Path, output_dir: Path,
-                 parent: QObject | None = None):
-        super().__init__(self._execute, "ocr-job", parent)
+    def __init__(self, processor: OCRProcessor, mode: str, path: Path, output_dir: Path):
+        super().__init__(self._execute, "ocr-job")
         self.processor = processor
         self.mode = mode
         self.path = path
@@ -82,8 +88,8 @@ class OCRJob(Task):
         self.processor.cancel()
 
 
-def count_supported_files(folder: Path) -> dict[str, int]:
-    """Images and PDFs below ``folder`` (run this off the GUI thread)."""
+def count_supported_files(folder: Path) -> tuple[Path, dict[str, int]]:
+    """``(folder, {"images": n, "pdfs": m})`` below ``folder`` (run this off the GUI thread)."""
     exts = set(image_extensions())
     images = pdfs = 0
     for path in Path(folder).rglob("*"):
@@ -93,7 +99,7 @@ def count_supported_files(folder: Path) -> dict[str, int]:
                 images += 1
             elif suffix == ".pdf":
                 pdfs += 1
-    return {"images": images, "pdfs": pdfs}
+    return Path(folder), {"images": images, "pdfs": pdfs}
 
 
 __all__ = ["Task", "OCRJob", "count_supported_files", "ArchiveReport"]

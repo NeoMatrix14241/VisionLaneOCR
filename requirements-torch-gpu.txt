@@ -1,0 +1,22 @@
+# ---------------------------------------------------------------------
+# CUDA build of PyTorch (NVIDIA GPUs) - install this BEFORE requirements.txt:
+#
+#   pip install -r requirements-torch-gpu.txt
+#   pip install -r requirements.txt
+#
+# (or let deploy_pyvenv.bat do both:  deploy_pyvenv.bat gpu)
+#
+# Why a separate file: the default PyPI torch wheel for Windows is CPU-only, and the CUDA wheels live on
+# PyTorch's own index. requirements.txt only asks for "torch>=2.14.1", so a CUDA build installed here is kept.
+#
+# "cu134" = CUDA 13.4 runtime (bundled in the wheel; you do NOT need the CUDA Toolkit, only an NVIDIA driver that
+# supports it - check "CUDA Version" in the nvidia-smi header). Verified: torch 2.15.0+cu134 on a GTX 1660 Ti
+# (Turing, driver 621.24). For an older driver pick another tag, e.g. cu130 or cu126 (the list is at
+# https://pytorch.org/get-started/locally/). CUDA 13 builds dropped Maxwell/Pascal/Volta cards (GTX 9xx/10xx,
+# Titan V): use a CUDA 12.x tag for those.
+#
+# Check afterwards:  python -m utils.diagnostics   ->  "Device : cuda"
+# ---------------------------------------------------------------------
+--index-url https://download.pytorch.org/whl/cu134
+torch
+torchvision

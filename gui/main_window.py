@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Callable
 
 from PyQt6.QtCore import Qt, QTimer, QUrl
-from PyQt6.QtGui import QDesktopServices, QIcon
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-                             QProgressBar, QPushButton, QSlider, QVBoxLayout, QWidget,
+from PyQt6.QtGui import QAction, QDesktopServices, QIcon
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMenu, QMenuBar,
+                             QMessageBox, QProgressBar, QPushButton, QSlider, QVBoxLayout, QWidget,
                              QTabWidget)
 
 from core.archiver import archive_inputs, is_inside
 from core.constants import (DEFAULT_DETECTION_MODEL, DEFAULT_RECOGNITION_MODEL, image_extensions)
+from core.enhance import super_resolution_available
 from core.hardware import HardwareMonitor
+from core.paper import AUTO, ORIGINAL, PAGE_SIZE_CHOICES
 from core.ocr_processor import OCRProcessor
 from core.results import BatchResult, ProgressEvent
 from utils import models as model_utils
@@ -30,6 +33,19 @@ logger = logging.getLogger(__name__)
 _STAGE_TEXT = {"loading": "Loading", "ocr": "Recognising", "writing": "Writing", "merging": "Merging PDF"}
 
 
+def _add_menu(menubar: QMenuBar, title: str) -> QMenu:
+    menu = menubar.addMenu(title)
+    assert menu is not None
+    return menu
+
+
+def _add_action(menu: QMenu, text: str, slot: Callable[..., object]) -> QAction:
+    action = menu.addAction(text)
+    assert action is not None
+    action.triggered.connect(slot)
+    return action
+
+
 class MainWindow(QMainWindow):
     def __init__(self, config: AppConfig, config_path: Path):
         super().__init__()
@@ -42,7 +58,7 @@ class MainWindow(QMainWindow):
         self._loaded_models = (config.detection_model, config.recognition_model)
         self._archive_request: tuple[bool, Path | None] = (False, None)
         self.monitor = HardwareMonitor()
-        self.theme_actions: dict[str, object] = {}
+        self.theme_actions: dict[str, QAction] = {}
 
         self.setWindowTitle("VisionLane OCR")
         self.setMinimumSize(800, 450)
@@ -130,6 +146,32 @@ class MainWindow(QMainWindow):
         row3.addStretch(1)
         row3.addWidget(self.skip_text_check)
         layout.addLayout(row3)
+
+        # --- page handling
+        row4 = QHBoxLayout()
+        self.page_size_combo = QComboBox()
+        for choice in PAGE_SIZE_CHOICES:
+            label = {ORIGINAL: "Original size", AUTO: "Auto (most common paper)"}.get(choice, choice)
+            self.page_size_combo.addItem(label, choice)
+        self.page_size_combo.setToolTip("Give all pages of an image folder the same paper size (image scaled to fit, "
+                                        "aspect ratio kept, orientation kept). Not applied to PDF input.")
+        self.enhance_check = QCheckBox("Enhance low-resolution pages")
+        self.enhance_check.setToolTip("Super-resolution (x2) for pages whose resolution would fall below "
+                                      f"{self.config.enhance_min_dpi} dpi on the chosen paper size. "
+                                      "Slow; needs the optional 'super-image' package.")
+        if not super_resolution_available():
+            self.enhance_check.setEnabled(False)
+            self.enhance_check.setToolTip("Needs the optional 'super-image' package:  pip install super-image")
+        self.straighten_check = QCheckBox("Rotated / skewed pages")
+        self.straighten_check.setToolTip("Detect pages scanned sideways or upside down and skewed text lines. "
+                                         "Slower; downloads two small extra models on first use.")
+        self.straighten_check.toggled.connect(self._on_straighten_toggled)
+        row4.addWidget(QLabel("Page size:"))
+        row4.addWidget(self.page_size_combo)
+        row4.addWidget(self.enhance_check)
+        row4.addStretch(1)
+        row4.addWidget(self.straighten_check)
+        layout.addLayout(row4)
         for signal in (self.compress_check.toggled, self.compress_type.currentIndexChanged, self.quality_slider.valueChanged):
             signal.connect(self._update_compression_controls)
 
@@ -147,9 +189,9 @@ class MainWindow(QMainWindow):
 
         hw = QHBoxLayout()
         self.device_label, self.usage_label, self.memory_label = QLabel(), QLabel(), QLabel()
-        for label in (self.device_label, self.usage_label, self.memory_label):
-            label.setStyleSheet("padding: 5px; margin: 2px;")
-            hw.addWidget(label)
+        for status_label in (self.device_label, self.usage_label, self.memory_label):
+            status_label.setStyleSheet("padding: 5px; margin: 2px;")
+            hw.addWidget(status_label)
         layout.addLayout(hw)
         self.notice_label = QLabel()
         self.notice_label.setWordWrap(True)
@@ -169,20 +211,20 @@ class MainWindow(QMainWindow):
 
     def _build_menu(self) -> None:
         menubar = self.menuBar()
-        file_menu = menubar.addMenu("File")
-        file_menu.addAction("Open...").triggered.connect(self._open_file)
-        file_menu.addAction("Save Settings").triggered.connect(self._save_settings_clicked)
+        assert menubar is not None
+        file_menu = _add_menu(menubar, "File")
+        _add_action(file_menu, "Open...", self._open_file)
+        _add_action(file_menu, "Save Settings", self._save_settings_clicked)
         file_menu.addSeparator()
-        file_menu.addAction("Exit").triggered.connect(self.close)
-        menubar.addMenu("Settings").addAction("Performance Options").triggered.connect(self._performance_options)
-        theme_menu = menubar.addMenu("Theme")
-        for mode, label in (("system", "System Default"), ("light", "Light Mode"), ("dark", "Dark Mode"),
-                            ("night", "Night Mode")):
-            action = theme_menu.addAction(label)
+        _add_action(file_menu, "Exit", self.close)
+        _add_action(_add_menu(menubar, "Settings"), "Performance Options", self._performance_options)
+        theme_menu = _add_menu(menubar, "Theme")
+        for mode, menu_label in (("system", "System Default"), ("light", "Light Mode"), ("dark", "Dark Mode"),
+                                 ("night", "Night Mode")):
+            action = _add_action(theme_menu, menu_label, lambda _checked=False, m=mode: self._apply_theme(m))
             action.setCheckable(True)
-            action.triggered.connect(lambda _checked=False, m=mode: self._apply_theme(m))
             self.theme_actions[mode] = action
-        menubar.addMenu("Help").addAction("About").triggered.connect(lambda: show_about(self))
+        _add_action(_add_menu(menubar, "Help"), "About", lambda: show_about(self))
 
     # ================================================================== settings <-> widgets
     def _apply_config_to_widgets(self) -> None:
@@ -198,6 +240,11 @@ class MainWindow(QMainWindow):
         self.compress_type.setCurrentIndex(COMPRESSION_CHOICES.index(cfg.compression_type))
         self.quality_slider.setValue(cfg.compression_quality)
         self.skip_text_check.setChecked(cfg.skip_text_pages)
+        self.page_size_combo.setCurrentIndex(max(0, self.page_size_combo.findData(cfg.page_size)))
+        self.enhance_check.setChecked(cfg.enhance_enabled and self.enhance_check.isEnabled())
+        self.straighten_check.blockSignals(True)
+        self.straighten_check.setChecked(cfg.straighten_pages)
+        self.straighten_check.blockSignals(False)
         self._update_compression_controls()
         for kind in TABS:
             tab = self.input_tabs[kind]
@@ -219,6 +266,9 @@ class MainWindow(QMainWindow):
         cfg.compression_type = COMPRESSION_CHOICES[self.compress_type.currentIndex()]
         cfg.compression_quality = self.quality_slider.value()
         cfg.skip_text_pages = self.skip_text_check.isChecked()
+        cfg.page_size = self.page_size_combo.currentData()
+        cfg.enhance_enabled = self.enhance_check.isChecked()
+        cfg.straighten_pages = self.straighten_check.isChecked()
         for kind, tab in self.input_tabs.items():
             cfg.input_paths[kind] = str(tab.input_path or "")
             cfg.output_paths[kind] = tab.output_edit.text().strip()
@@ -274,7 +324,7 @@ class MainWindow(QMainWindow):
 
     def _set_busy(self, busy: bool, message: str = "") -> None:
         self._busy = busy
-        for widget in (self.det_combo, self.rec_combo, self.device_combo):
+        for widget in (self.det_combo, self.rec_combo, self.device_combo, self.straighten_check):
             widget.setEnabled(not busy)
         self.start_button.setEnabled(not busy and self.processor is not None and self.job is None)
         if message:
@@ -284,18 +334,19 @@ class MainWindow(QMainWindow):
         det, rec = self._selected_models()
         device = self.device_combo.currentData()
         threads = self.config.cpu_threads
+        straighten = self.straighten_check.isChecked()
         self._set_busy(True, "Loading OCR models (the first run may download them)...")
 
         def build() -> OCRProcessor:
             for kind, name in ((model_utils.DETECTION, det), (model_utils.RECOGNITION, rec)):
                 if not model_utils.is_cached(name):
                     model_utils.download(kind, name)
-            return OCRProcessor(det, rec, device, cpu_threads=threads)
+            return OCRProcessor(det, rec, device, cpu_threads=threads, straighten_pages=straighten)
 
-        task = Task(build, "engine-load", self)
+        task = Task(build, "engine-load")
         task.succeeded.connect(self._on_engine_ready)
-        task.failed.connect(lambda msg: self._on_engine_failed(msg, first_load=True))
-        self._tasks.append(task)
+        task.failed.connect(self._on_engine_load_failed)
+        self._tasks = [t for t in self._tasks if t.running] + [task]
         task.start()
 
     def _on_engine_ready(self, processor: OCRProcessor) -> None:
@@ -304,11 +355,20 @@ class MainWindow(QMainWindow):
         self._populate_model_combos()
         self._select_model(self.det_combo, self._loaded_models[0], DEFAULT_DETECTION_MODEL)
         self._select_model(self.rec_combo, self._loaded_models[1], DEFAULT_RECOGNITION_MODEL)
+        self.straighten_check.blockSignals(True)
+        self.straighten_check.setChecked(processor.engine.straighten_pages)
+        self.straighten_check.blockSignals(False)
         self._set_busy(False, "No file processing")
         warnings = processor.engine.report.warnings
         self.notice_label.setText("\u26a0 " + " ".join(warnings) if warnings else "")
         self.notice_label.setVisible(bool(warnings))
         self._update_hardware()
+
+    def _on_engine_load_failed(self, message: str) -> None:
+        self._on_engine_failed(message, first_load=True)
+
+    def _on_engine_reload_failed(self, message: str) -> None:
+        self._on_engine_failed(message, first_load=False)
 
     def _on_engine_failed(self, message: str, first_load: bool) -> None:
         logger.error("Model loading failed: %s", message)
@@ -320,6 +380,9 @@ class MainWindow(QMainWindow):
             self.device_combo.blockSignals(True)
             self.device_combo.setCurrentIndex(DEVICE_CHOICES.index(self.config.device))
             self.device_combo.blockSignals(False)
+            self.straighten_check.blockSignals(True)
+            self.straighten_check.setChecked(self.processor.engine.straighten_pages)
+            self.straighten_check.blockSignals(False)
             self.start_button.setEnabled(True)
         QMessageBox.critical(self, "Could not load the OCR models",
                              f"{message}\n\nCheck your internet connection (models are downloaded on first use) "
@@ -336,10 +399,10 @@ class MainWindow(QMainWindow):
             action(processor)
             return processor
 
-        task = Task(work, "engine-reload", self)
+        task = Task(work, "engine-reload")
         task.succeeded.connect(self._on_engine_ready)
-        task.failed.connect(lambda msg: self._on_engine_failed(msg, first_load=False))
-        self._tasks.append(task)
+        task.failed.connect(self._on_engine_reload_failed)
+        self._tasks = [t for t in self._tasks if t.running] + [task]
         task.start()
 
     def _on_model_selected(self, _index: int = 0) -> None:
@@ -361,6 +424,11 @@ class MainWindow(QMainWindow):
         preference = self.device_combo.currentData()
         self._reload(lambda p: p.set_device(preference), "Switching processing device...")
 
+    def _on_straighten_toggled(self, enabled: bool) -> None:
+        if self.processor is None:
+            return
+        self._reload(lambda p: p.set_straighten(enabled), "Loading page-orientation models...")
+
     def _performance_options(self) -> None:
         threads = ask_cpu_threads(self, self.config.cpu_threads)
         if threads is not None:
@@ -371,10 +439,12 @@ class MainWindow(QMainWindow):
     # ================================================================== hardware read-out
     def _update_hardware(self) -> None:
         proc = self.processor
-        device = proc.device if proc else None
-        index = 0
-        name = proc.engine.gpu_name if proc else ""
-        snap = self.monitor.snapshot(device, index, name)
+        try:
+            snap = self.monitor.snapshot(proc.device if proc else None, proc.engine.gpu if proc else None)
+        except Exception as exc:  # pylint: disable=broad-except
+            # never let a monitoring glitch escape a Qt slot (PyQt6 aborts the process on that)
+            logger.debug("Hardware read-out failed: %s", exc)
+            return
         self.device_label.setText(snap.device_text)
         self.usage_label.setText(snap.usage_text)
         self.memory_label.setText(snap.memory_text)
@@ -441,11 +511,15 @@ class MainWindow(QMainWindow):
             compression_type=COMPRESSION_CHOICES[self.compress_type.currentIndex()],
             compression_quality=self.quality_slider.value(),
             skip_text_pages=self.skip_text_check.isChecked(),
+            page_size=self.page_size_combo.currentData(),
+            enhance_enabled=self.enhance_check.isChecked(),
+            enhance_scale=self.config.enhance_scale,
+            enhance_min_dpi=self.config.enhance_min_dpi,
         )
         self._archive_request = (archive_on, archive_dir)
         self._save_settings()
 
-        self.job = OCRJob(self.processor, mode, input_path, output_dir, self)
+        self.job = OCRJob(self.processor, mode, input_path, output_dir)
         self.job.progress.connect(self._on_progress)
         self.job.succeeded.connect(self._on_job_finished)
         self.job.failed.connect(self._on_job_failed)
@@ -462,7 +536,7 @@ class MainWindow(QMainWindow):
     def _cancel_processing(self) -> None:
         if self.job is not None:
             self.cancel_button.setEnabled(False)
-            self.current_label.setText("Cancelling... (the page being recognised is finished first)")
+            self.current_label.setText("Cancelling... (stopping at the next model step)")
             self.job.cancel()
 
     def _on_progress(self, event: ProgressEvent) -> None:
@@ -519,6 +593,8 @@ class MainWindow(QMainWindow):
             box.setDetailedText("\n".join(result.failure_lines()))
         if result.session_dir is not None and result.total:
             text += f"\n\nOutput: {result.session_dir}"
+        if result.warnings:
+            text += "\n\nNote:\n" + "\n".join(result.warnings)
         if archive_note:
             text += f"\n\n{archive_note}"
         box.setText(text)
