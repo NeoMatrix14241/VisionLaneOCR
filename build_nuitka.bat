@@ -32,6 +32,7 @@ rmdir /s /q dist_nuitka 2>nul
 
 echo Building with Nuitka (this takes a while)...
 ".venv\Scripts\python.exe" -m nuitka ^
+    --low-memory ^
     --standalone ^
     --assume-yes-for-downloads ^
     --jobs=%NUMBER_OF_PROCESSORS% ^
