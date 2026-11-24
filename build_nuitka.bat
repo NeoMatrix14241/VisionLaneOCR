@@ -29,12 +29,12 @@ if errorlevel 1 (
 )
 
 rmdir /s /q dist_nuitka 2>nul
-
+rem --jobs=%NUMBER_OF_PROCESSORS% ^
 echo Building with Nuitka (this takes a while)...
 ".venv\Scripts\python.exe" -m nuitka ^
     --standalone ^
     --assume-yes-for-downloads ^
-    --jobs=%NUMBER_OF_PROCESSORS% ^
+    --low-memory ^
     --output-dir=dist_nuitka ^
     --output-filename=VisionLaneOCR.exe ^
     --windows-icon-from-ico=icon.ico ^
