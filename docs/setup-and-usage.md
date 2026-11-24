@@ -25,7 +25,7 @@ Pre-download the default models (optional, the app also does it on first start):
 ## Using the GUI
 1. Pick a tab: **Single File** (an image or a PDF), **Folder** (scanned recursively), **PDF**.
 2. Choose the input and an output directory (must not be inside the input folder). Optionally enable **Archiving?** and choose an archive directory.
-3. Options: DPI, output format, **Device** (Auto / GPU / CPU), detection and recognition model (a ⬇ marks models that are not downloaded yet; selecting one downloads and loads it in the background), compression (JPEG quality / lossless), skip PDF pages that already have text.
+3. Options: DPI, output format, **Device** (Auto / GPU / CPU), detection and recognition model (a ⬇ marks models that are not downloaded yet; selecting one downloads it in the background - the status line and progress bar show MB and % - and then loads it), compression (JPEG quality / lossless), skip PDF pages that already have text.
    Page handling (off by default): **Page size** (Original / Auto / A4 / Letter ...), **Enhance low-resolution pages** (greyed out unless `pip install super-image`), **Rotated / skewed pages** (reloads the models; downloads two extra models on first use).
 4. **Start Processing.** The status line shows the file and page being worked on; the bar shows overall progress.
 5. **Cancel** finishes the current page, writes no half-finished PDFs and archives nothing.
@@ -49,7 +49,7 @@ INPUT is a folder, an image or a PDF. Exit code 0 = everything OK, 1 = some file
 ## Tests and lint
 ```bat
 .venv\Scripts\pip install -r requirements-dev.txt
-.venv\Scripts\python -m pytest        :: 96 tests; headless; fake engine plus real-DocTR tests
+.venv\Scripts\python -m pytest        :: 110 tests; headless; fake engine plus real-DocTR tests
 run_mypy.bat                          :: static type check (mypy.ini)
 run_pylint.bat                        :: read-only; writes pylint_report.txt
 ```

@@ -19,6 +19,7 @@ output/
 logs/
 *.egg-info/
 temp_binaries/
+.mypy_cache/
 
 # IDE settings
 .vscode/

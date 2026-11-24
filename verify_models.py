@@ -16,7 +16,7 @@ def main() -> int:
             continue
         print(f"Downloading {name} ({kind})...")
         try:
-            models.download(kind, name)
+            models.download(kind, name, progress=models.console_progress())
         except Exception as exc:  # pylint: disable=broad-except
             print(f"  FAILED: {exc}")
             ok = False

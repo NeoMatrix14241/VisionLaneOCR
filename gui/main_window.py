@@ -26,7 +26,7 @@ from utils.app_paths import app_root
 from . import theme
 from .dialogs import ask_cpu_threads, show_about
 from .input_tab import InputTab
-from .workers import OCRJob, Task
+from .workers import LoadEvent, LoadTask, OCRJob, Task, fetch_missing
 
 logger = logging.getLogger(__name__)
 
@@ -327,8 +327,36 @@ class MainWindow(QMainWindow):
         for widget in (self.det_combo, self.rec_combo, self.device_combo, self.straighten_check):
             widget.setEnabled(not busy)
         self.start_button.setEnabled(not busy and self.processor is not None and self.job is None)
+        if busy:
+            self.progress_bar.setRange(0, 0)               # busy indicator until real progress arrives
+            self.progress_label.setText("Loading models...")
+        else:
+            self.progress_bar.setRange(0, 1000)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("%p%")
+            self.progress_label.setText("Files Processed: 0/0")
         if message:
             self.current_label.setText(message)
+
+    def _on_load_event(self, event: LoadEvent) -> None:
+        """Model download / load progress: real byte progress while downloading, a busy bar while loading."""
+        if event.stage != "download":
+            self.progress_bar.setRange(0, 0)
+            self.progress_label.setText("Loading models...")
+            self.current_label.setText("Loading models into memory...")
+            return
+        title = f"Downloading model {event.index} of {event.count}: {event.name}" if event.count > 1 \
+            else f"Downloading model: {event.name}"
+        self.progress_label.setText(f"Download {event.index}/{event.count}")
+        if event.total > 0:
+            fraction = min(1.0, event.done / event.total)
+            self.progress_bar.setRange(0, 1000)
+            self.progress_bar.setValue(int(fraction * 1000))
+            self.progress_bar.setFormat(f"{fraction:.0%}")      # same rounding as the text on the left
+            self.current_label.setText(f"{title} - {event.done / 1e6:.1f} / {event.total / 1e6:.1f} MB ({fraction:.0%})")
+        else:
+            self.progress_bar.setRange(0, 0)
+            self.current_label.setText(f"{title} - {event.done / 1e6:.1f} MB")
 
     def _load_engine(self) -> None:
         det, rec = self._selected_models()
@@ -337,13 +365,12 @@ class MainWindow(QMainWindow):
         straighten = self.straighten_check.isChecked()
         self._set_busy(True, "Loading OCR models (the first run may download them)...")
 
-        def build() -> OCRProcessor:
-            for kind, name in ((model_utils.DETECTION, det), (model_utils.RECOGNITION, rec)):
-                if not model_utils.is_cached(name):
-                    model_utils.download(kind, name)
+        def build(emit) -> OCRProcessor:
+            fetch_missing(model_utils.models_needed(det, rec, straighten), emit)
             return OCRProcessor(det, rec, device, cpu_threads=threads, straighten_pages=straighten)
 
-        task = Task(build, "engine-load")
+        task = LoadTask(build, "engine-load")
+        task.progress.connect(self._on_load_event)
         task.succeeded.connect(self._on_engine_ready)
         task.failed.connect(self._on_engine_load_failed)
         self._tasks = [t for t in self._tasks if t.running] + [task]
@@ -389,17 +416,18 @@ class MainWindow(QMainWindow):
                              "and the log file for details.")
 
     def _reload(self, action, description: str) -> None:
-        """Run ``action(processor)`` (model/device switch) on a background thread."""
+        """Run ``action(processor, emit)`` (model/device switch) on a background thread; ``emit`` reports progress."""
         if self.processor is None or self.job is not None:
             return
         self._set_busy(True, description)
         processor = self.processor
 
-        def work() -> OCRProcessor:
-            action(processor)
+        def work(emit) -> OCRProcessor:
+            action(processor, emit)
             return processor
 
-        task = Task(work, "engine-reload")
+        task = LoadTask(work, "engine-reload")
+        task.progress.connect(self._on_load_event)
         task.succeeded.connect(self._on_engine_ready)
         task.failed.connect(self._on_engine_reload_failed)
         self._tasks = [t for t in self._tasks if t.running] + [task]
@@ -410,10 +438,8 @@ class MainWindow(QMainWindow):
         if (det, rec) == self._loaded_models:
             return
 
-        def action(processor: OCRProcessor) -> None:
-            for kind, name in ((model_utils.DETECTION, det), (model_utils.RECOGNITION, rec)):
-                if not model_utils.is_cached(name):
-                    model_utils.download(kind, name)
+        def action(processor: OCRProcessor, emit) -> None:
+            fetch_missing(model_utils.models_needed(det, rec, processor.engine.straighten_pages), emit)
             processor.set_models(det, rec)
 
         self._reload(action, f"Loading models {det} + {rec}...")
@@ -422,12 +448,17 @@ class MainWindow(QMainWindow):
         if self.processor is None:
             return
         preference = self.device_combo.currentData()
-        self._reload(lambda p: p.set_device(preference), "Switching processing device...")
+        self._reload(lambda p, emit: p.set_device(preference), "Switching processing device...")
 
     def _on_straighten_toggled(self, enabled: bool) -> None:
         if self.processor is None:
             return
-        self._reload(lambda p: p.set_straighten(enabled), "Loading page-orientation models...")
+        def action(processor: OCRProcessor, emit) -> None:
+            engine = processor.engine
+            fetch_missing(model_utils.models_needed(engine.detection_model, engine.recognition_model, enabled), emit)
+            processor.set_straighten(enabled)
+
+        self._reload(action, "Loading page-orientation models...")
 
     def _performance_options(self) -> None:
         threads = ask_cpu_threads(self, self.config.cpu_threads)

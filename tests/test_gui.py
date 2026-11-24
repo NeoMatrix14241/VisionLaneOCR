@@ -34,7 +34,7 @@ def wait_until(app, condition, timeout=10.0):
 def window(qapp, tmp_path, monkeypatch):
     import gui.main_window as mw
     monkeypatch.setattr(mw, "OCRProcessor", lambda det, reco, device, cpu_threads=0, **_kw: OCRProcessor(engine=FakeEngine()))
-    monkeypatch.setattr(mw.model_utils, "is_cached", lambda name: True)
+    monkeypatch.setattr(mw.model_utils, "is_cached", lambda name, kind=None: True)
     shown = []
     monkeypatch.setattr(QMessageBox, "exec", lambda self: shown.append((self.windowTitle(), self.text(), self.detailedText())) or 0)
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: shown.append(("warning", a[2], "")) or 0))
@@ -208,3 +208,111 @@ def test_processor_warnings_are_shown_in_the_summary(qapp, window, tmp_path, mak
     assert wait_until(qapp, lambda: window.job is None)
     title, text, _ = window.shown[-1]
     assert title == "Success" and "pip install super-image" in text
+
+
+# ----------------------------------------------------------------------------- model download progress
+def sample_until(app, condition, states, window, timeout=15.0):
+    """Like wait_until, but records what the status widgets show on every tick."""
+    end = time.time() + timeout
+    while time.time() < end:
+        app.processEvents()
+        bar = window.progress_bar
+        states.append((bar.maximum(), bar.value(), window.current_label.text(), window.progress_label.text()))
+        if condition():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_selecting_an_undownloaded_model_shows_download_progress_in_the_window(qapp, window, monkeypatch):
+    from utils.models import DownloadProgress
+    import gui.main_window as mw
+    monkeypatch.setattr(mw.model_utils, "is_cached", lambda name, kind=None: name != "db_resnet34")
+    fetched = []
+
+    def fake_download(kind, name, progress=None):
+        fetched.append(name)
+        for done in (0, 2_000_000, 4_000_000, 8_000_000):
+            progress(DownloadProgress(name, done, 8_000_000))
+            time.sleep(0.2)
+
+    monkeypatch.setattr(mw.model_utils, "download", fake_download)
+    index = window.det_combo.findData("db_resnet34")
+    window.det_combo.setCurrentIndex(index)
+    seen_events = []
+    original = window._on_load_event
+    monkeypatch.setattr(window, "_on_load_event", lambda event: (seen_events.append(event), original(event))[1])
+    window.det_combo.activated.emit(index)
+    assert window.progress_bar.maximum() == 0                      # busy indicator straight away (before any bytes arrive)
+    states = []
+    assert sample_until(qapp, lambda: window.processor.engine.detection_model == "db_resnet34"
+                        and window.start_button.isEnabled(), states, window)
+    assert fetched == ["db_resnet34"]
+    downloading = [s for s in states if "Downloading model: db_resnet34" in s[2]]
+    assert downloading, "no download status was ever shown"
+    assert any("MB" in s[2] and "%" in s[2] for s in downloading)
+    assert "25%" in " ".join(s[2] for s in downloading) and "%p%" == window.progress_bar.format()   # label shows 25%, bar format restored
+    determinate = [s[1] for s in downloading if s[0] == 1000]
+    assert determinate and max(determinate) >= 900 and determinate == sorted(determinate)   # real, rising progress
+    assert [e.stage for e in seen_events][0] == "download" and seen_events[-1].stage == "load"   # download, then the load stage
+    assert any(e.total == 8_000_000 and e.done == 8_000_000 for e in seen_events)
+    assert any(s[3].startswith("Download 1/1") for s in downloading)
+    bar = window.progress_bar
+    assert (bar.minimum(), bar.maximum(), bar.value()) == (0, 1000, 0)                      # restored afterwards
+    assert window.progress_label.text() == "Files Processed: 0/0"
+
+
+def test_rotated_page_option_downloads_the_orientation_models_with_progress(qapp, window, monkeypatch):
+    from utils.models import ORIENTATION_MODELS, DownloadProgress
+    import gui.main_window as mw
+    orientation = {name for _kind, name in ORIENTATION_MODELS}
+    monkeypatch.setattr(mw.model_utils, "is_cached", lambda name, kind=None: name not in orientation)
+    fetched = []
+
+    def fake_download(kind, name, progress=None):
+        fetched.append((kind, name))
+        progress(DownloadProgress(name, 1_000_000, 4_000_000))
+        time.sleep(0.2)
+        progress(DownloadProgress(name, 4_000_000, 4_000_000))
+
+    monkeypatch.setattr(mw.model_utils, "download", fake_download)
+    window.straighten_check.setChecked(True)
+    states = []
+    assert sample_until(qapp, lambda: window.start_button.isEnabled(), states, window)
+    assert [name for _kind, name in fetched] == [name for _kind, name in ORIENTATION_MODELS]
+    labels = {s[3] for s in states}
+    assert "Download 1/2" in labels and "Download 2/2" in labels
+    assert window.processor.engine.straighten_pages is True
+
+
+def test_failed_download_is_reported_and_the_window_recovers(qapp, window, monkeypatch):
+    import gui.main_window as mw
+    monkeypatch.setattr(mw.model_utils, "is_cached", lambda name, kind=None: name != "db_resnet34")
+
+    def failing(kind, name, progress=None):
+        raise OSError("no internet connection")
+
+    monkeypatch.setattr(mw.model_utils, "download", failing)
+    index = window.det_combo.findData("db_resnet34")
+    window.det_combo.setCurrentIndex(index)
+    window.det_combo.activated.emit(index)
+    states = []
+    assert sample_until(qapp, lambda: any(t == "critical" for t, _m, _d in window.shown), states, window)
+    assert "no internet connection" in window.shown[-1][1]
+    assert window.start_button.isEnabled() and window.det_combo.currentData() == "db_resnet50"   # back on the old model
+    assert (window.progress_bar.minimum(), window.progress_bar.maximum()) == (0, 1000)
+
+
+def test_fetch_missing_reports_each_missing_model_then_the_load_stage(monkeypatch):
+    from gui.workers import fetch_missing
+    import utils.models as models
+    monkeypatch.setattr(models, "is_cached", lambda name, kind=None: name == "have")
+    seen = []
+    monkeypatch.setattr(models, "download", lambda kind, name, progress=None:
+                        progress(models.DownloadProgress(name, 5, 10)))
+    events = []
+    fetch_missing([("detection", "have"), ("detection", "a"), ("recognition", "b")], events.append)
+    assert [(e.stage, e.name, e.index, e.count, e.done, e.total) for e in events] == [
+        ("download", "a", 1, 2, 0, 0), ("download", "a", 1, 2, 5, 10),
+        ("download", "b", 2, 2, 0, 0), ("download", "b", 2, 2, 5, 10), ("load", "", 0, 0, 0, 0)]
+    assert not seen

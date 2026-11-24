@@ -62,9 +62,22 @@ an engine (tests inject a fake engine).
 4. When the import finishes, create `MainWindow` and show it. `MainWindow` builds the UI from the config and starts an
    `engine-load` task on a background thread: download missing models, build `OCRProcessor` (device detection, CUDA
    smoke test, model load). The *Start* button is enabled when it is ready; failures are shown in a dialog.
+   While models are downloaded the status line shows `Downloading model 2 of 2: parseq - 45.3 / 98.7 MB (46%)` and the progress bar
+   fills; while they are loaded into memory the bar shows a busy animation (see 2.1).
 5. Exit: `closeEvent` (asks if a job runs -> cancel -> wait up to 30 s -> save config) -> `app.exec()` returns.
 
 There are no `sleep`s, no import-time patches and no second splash.
+
+### 2.1 Model download progress
+`utils.models.download()` does the download itself instead of calling DocTR's downloader (which only prints a console bar and
+writes straight into the cache): the URL and checksum come from DocTR's own `default_cfgs` (`model_source()`), the bytes go to
+`<file>.part` with progress callbacks (throttled to ~10/s), and the file is renamed into the cache only after the size and
+SHA-256 prefix are verified - an interrupted or corrupt download never leaves a plausible-looking file. If a model's source
+cannot be determined (e.g. a future DocTR release), DocTR's own downloader is used (indeterminate bar, no byte progress).
+`gui.workers.fetch_missing()` downloads whatever the chosen settings need (detection + recognition, plus the two orientation
+models when *Rotated / skewed pages* is on) and emits `LoadEvent`s; `LoadTask` delivers them to `MainWindow._on_load_event`.
+Nothing is modal: only the model/device controls are disabled while it runs. `verify_models.py` and `run_ocr.py` print the same
+progress on one console line.
 
 ## 3. Processing pipeline
 

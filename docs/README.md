@@ -22,7 +22,7 @@ Hobby project built on [DocTR](https://github.com/mindee/doctr) (PyTorch) with a
 1. **Single File, Folder and PDF** workflows all go through one `OCRProcessor` API and one result model (`BatchResult`).
 2. Failures are reported per file and page; archiving only moves files whose output was fully written.
 3. The CUDA/DocTR monkey-patch layer, Ghostscript, ocrmypdf and the thread-killing code are **gone**; the engine uses stock PyTorch/DocTR APIs.
-4. Compression, progress reporting and cancellation are real and covered by tests (96 tests, headless; `mypy` clean).
+4. Compression, progress reporting and cancellation are real and covered by tests (110 tests, headless; `mypy` clean).
 5. **Not yet verified:** pretrained-weight recognition quality, CUDA/OOM recovery and the Windows build scripts - see `VL-066` in [known-issues.md](known-issues.md).
 
 ## Conventions

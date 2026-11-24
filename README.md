@@ -27,7 +27,7 @@ An OCR (Optical Character Recognition) application built with DocTR and PyQt6, d
 - 📑 PDF input keeps the **original pages** and adds an invisible text layer; pages that already contain text are skipped (optional)
 - 🗜️ Real PDF image compression (JPEG with adjustable quality, or lossless) - no Ghostscript needed
 - 🖥️ PyQt6 GUI with real-time progress, GPU/CPU metrics and Dark / Light / Night themes
-- 🧩 Selectable DocTR detection and recognition models (downloaded on demand)
+- 🧩 Selectable DocTR detection and recognition models, downloaded on demand with a **live progress bar** (MB and %) in the main window
 - 🛟 Failures are reported, never silent: a summary lists every file that failed and why
 - ⏹️ Safe cancellation (acts between model stages, leaves no half-written PDFs)
 - 📦 **Archiving option:** after a run, files that were processed successfully are moved to an archive folder (structure preserved). Failed files stay where they are; nothing is archived after a cancel.
@@ -77,7 +77,7 @@ Items marked `[x]` are done; `[ ]` are still open. Details and evidence live in 
 - [x] Natural file ordering (`img2` before `img10`)
 
 ### 🛠️ Quality / tooling
-- [x] Automated tests (`python -m pytest`, 96 tests, run headless)
+- [x] Automated tests (`python -m pytest`, 110 tests, run headless)
 - [x] CI that can fail (Windows, Python 3.12/3.13)
 - [x] Static type checking (`mypy`, clean; part of CI)
 - [ ] Windows build scripts (`build_nuitka.bat`, `build.spec`) were rewritten without access to Windows: **do a test build before releasing**

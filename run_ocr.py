@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     models.configure_cache()
     for kind, name in ((models.DETECTION, args.det), (models.RECOGNITION, args.reco)):
         if not models.is_cached(name):
-            models.download(kind, name)
+            models.download(kind, name, progress=models.console_progress())
 
     processor = OCRProcessor(args.det, args.reco, args.device, straighten_pages=args.straighten)
     processor.configure(output_formats=args.formats, dpi=args.dpi, compress_enabled=args.compress is not None,

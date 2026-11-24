@@ -7,7 +7,7 @@ evidence, file/line references and reasoning for every `VL-nnn`). The code was t
 **Verification environment.** The refactor was done and tested on Linux / Python 3.12 (CPU only) with PyQt6 on the
 `offscreen` platform, using the real PyTorch 2.14.1 and python-doctr 1.1.0 (installed late in the session).
 
-- 96 automated tests pass (`python -m pytest`) and `mypy` reports no issues, including `tests/test_integration_doctr.py`, which runs the **real** DocTR pipeline (real `ocr_predictor`, inference, `export_as_xml`, geometry conversion, PDF + HOCR output);
+- 110 automated tests pass (`python -m pytest`) and `mypy` reports no issues, including `tests/test_integration_doctr.py`, which runs the **real** DocTR pipeline (real `ocr_predictor`, inference, `export_as_xml`, geometry conversion, PDF + HOCR output);
 - that test uses randomly initialised weights: the sandbox cannot reach `doctr-static.mindee.com`, so **no pretrained model was downloaded and real recognition quality was not checked**;
 - nothing was run on Windows or on a CUDA GPU (the OOM recovery is covered by a fake-model test only)
 
@@ -93,7 +93,7 @@ evidence, file/line references and reasoning for every `VL-nnn`). The code was t
 | VL-043 Three config writers | **Fixed** | `utils/app_config.AppConfig` is the only reader/writer; atomic write | `tests/test_config.py` |
 | VL-044 Dead `[Startup]` keys | **Removed** | Dropped on load and not written; legacy files still load | `test_legacy_file_is_understood` |
 | VL-045 Committed `config.ini` | **Fixed** | Deleted from the repo and git-ignored; created on first run in the per-user folder | - |
-| VL-046 Fake download progress | **Fixed** | Downloads show an honest "loading" state, no scripted messages or sleeps | - |
+| VL-046 Fake download progress | **Fixed** | No scripted messages or sleeps; since the follow-up (VL-071) the window shows real byte progress | `test_selecting_an_undownloaded_model_shows_download_progress_in_the_window` |
 | VL-047 8.8.8.8 ping, `getlogin` | **Removed** | `system_diagnostics.py` replaced by `python -m utils.diagnostics` (no network access) | - |
 
 ### Build, CI, hygiene
@@ -105,7 +105,7 @@ evidence, file/line references and reasoning for every `VL-nnn`). The code was t
 | VL-050 CI | **Fixed (unverified)** | `windows-latest`, Python 3.12/3.13, installs `requirements-dev.txt`, runs pytest and pylint (`--fail-under=9.0`); no `\|\| true` | workflow not executed here |
 | VL-051 `run_ocr.py`, `debug_run.py` | **Fixed** | `run_ocr.py` is an argparse CLI on the new API with meaningful exit codes; `debug_run.py` deleted (`python main.py --debug`) | argument parsing checked; not run end-to-end (needs downloaded weights) |
 | VL-052 `pylint_clean.py` edits sources | **Removed** | `run_pylint.bat` runs pylint read-only | pylint 9.98/10 |
-| VL-053 No tests / pandas | **Fixed** | 96 tests; `data/dpi_res_matrix.py` rewritten without pandas and import side effects. *Type checking: VL-064* | `python -m pytest` |
+| VL-053 No tests / pandas | **Fixed** | 110 tests; `data/dpi_res_matrix.py` rewritten without pandas and import side effects. *Type checking: VL-064* | `python -m pytest` |
 | VL-054 Committed binaries | **Removed** | `cache_binaries.zip` and the generated 5 MB `uniform_data.csv` deleted (the CSV is reproducible with `python data/dpi_res_matrix.py`) | - |
 | VL-055 Dead code, bad dependency list | **Removed** | All listed modules/attributes deleted; `requirements.txt` trimmed (no `lxml`, `pdf2image`, `requests`, `tqdm`, `wmi`, `pandas`; added `pypdfium2`) | `pyflakes` clean |
 | VL-056 README drift | **Fixed** | README rewritten | - |
@@ -124,6 +124,8 @@ evidence, file/line references and reasoning for every `VL-nnn`). The code was t
 
 | VL-069 | DocTR 1.1.0's `export_as_xml()` raises `ValueError` for rotated (polygon) word geometry, so HOCR output would have crashed as soon as rotated-page mode was on (found by running real DocTR). | **Fixed** - polygons are captured for the PDF text layer first, then replaced by their bounding boxes for the HOCR export | `test_straighten_mode_gives_polygons_and_still_exports_hocr`, `test_rotated_words_survive_into_the_pdf...` |
 | VL-070 | **Crash (segfault/abort) when a background task finished after its window/tab was destroyed** (tasks were parented to widgets; callbacks were lambdas). Surfaced while adding tests. | **Fixed** - `Task` has no Qt parent, callbacks are bound slots (Qt auto-disconnects them), the hardware slot cannot raise | GUI suite run repeatedly (3x) without crashes |
+| VL-071 | **Model downloads had no indicator in the window** (DocTR only prints a console bar) and an interrupted download left a partial `.pt` file that looked like a cached model. | **Fixed** - own downloader (DocTR's URL + checksum) with MB/% in the status line and progress bar, `.part` file, size + SHA-256 verification; busy bar while loading into memory; CLI tools show the same progress | `tests/test_model_download.py` (local HTTP server), GUI tests |
+| VL-072 | `is_cached()` could never recognise `crnn_mobilenet_v3_small` / `_large` (their files are named `..._pt-<hash>.pt`), so the dropdown always marked them "not downloaded". | **Fixed** - the exact file name is derived from DocTR's config | `test_cache_check_knows_models_whose_file_name_differs_from_the_model_name` |
 
 ## 3. The six previously open items
 
@@ -166,7 +168,7 @@ All six were addressed in a second pass. What "done" means for each, and what is
 ### Verification checklist for a Windows/GPU machine (VL-066)
 
 1. `pip install -r requirements-dev.txt` (CUDA torch first), then `python -m utils.diagnostics`.
-2. `python -m pytest` - all 96 tests green, and `test_integration_doctr` **not skipped**.
+2. `python -m pytest` - all 110 tests green, and `test_integration_doctr` **not skipped**.
 3. `python main.py`: wait for "No file processing"; run a folder, a single image, a multi-page TIFF and a PDF; open the PDFs and select/search text.
 4. On a GPU with < 8 GB: process large scans, confirm the notice and that out-of-memory pages still complete (`logs/` shows the retry).
 5. `build_pyinstaller.bat` and `build_nuitka.bat`, then run the built executable from a clean folder.

@@ -27,7 +27,8 @@
 | `test_hardware.py` | GPU <-> NVML matching by UUID / PCI / index (fake NVML) |
 | `test_paper.py` | `core/paper.py` |
 | `test_uniform_pages.py` | page-size targets (named, auto, landscape), enhancement decision, failure fallback + warnings, tiled upscaling |
-| `test_gui.py` | headless MainWindow: end-to-end runs, failures, cancel, validation, settings persistence |
+| `test_gui.py` | headless MainWindow: end-to-end runs, failures, cancel, validation, settings persistence, model-download progress in the window |
+| `test_model_download.py` | downloader against a local HTTP server: progress, checksum, truncation, unreachable server, cleanup, fallback; real DocTR registry (all 20 models resolve, file-name check) |
 | `test_requirements.py` | install recipe: torch/torchvision are ranges that a CUDA build satisfies; GPU file points at PyTorch's `/whl/cuNNN` index; deploy script has the `gpu` mode |
 | `test_model_cache.py` | repo-local model cache, legacy copy, `DOCTR_CACHE_DIR` override, unwritable fallback |
 | `test_integration_doctr.py` | real DocTR pipeline with random weights; mid-page cancellation; rotated-page mode with the orientation models disabled (skipped without DocTR) |

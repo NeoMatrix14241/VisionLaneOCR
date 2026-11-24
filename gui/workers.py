@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -24,6 +25,7 @@ from core.archiver import ArchiveReport
 from core.constants import image_extensions
 from core.ocr_processor import OCRProcessor
 from core.results import BatchResult
+from utils import models as model_utils
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,39 @@ class Task(QObject):
     def join(self, timeout: float | None = None) -> None:
         if self._thread is not None:
             self._thread.join(timeout)
+
+
+@dataclass(frozen=True)
+class LoadEvent:
+    """Progress of loading the OCR models, for the status line and progress bar."""
+    stage: str            # "download" | "load"
+    name: str = ""        # model being downloaded
+    index: int = 0        # 1-based position among the models that have to be downloaded
+    count: int = 0
+    done: int = 0         # bytes received
+    total: int = 0        # bytes expected (0 = unknown)
+
+
+class LoadTask(Task):
+    """A :class:`Task` whose function receives an ``emit(LoadEvent)`` callback; events arrive on ``progress``."""
+
+    progress = pyqtSignal(object, arguments=["event"])
+
+    def __init__(self, fn: Callable[[Callable[[LoadEvent], None]], object], name: str = "load"):
+        super().__init__(lambda: fn(self.progress.emit), name)
+
+
+def fetch_missing(needed: list[tuple[str, str]], emit: Callable[[LoadEvent], None]) -> None:
+    """Download the models in ``needed`` that are not cached yet, reporting progress, then announce the load stage."""
+    missing = [(kind, name) for kind, name in needed if not model_utils.is_cached(name, kind)]
+    for index, (kind, name) in enumerate(missing, 1):
+        emit(LoadEvent("download", name, index, len(missing)))
+
+        def on_progress(progress: model_utils.DownloadProgress, index: int = index, count: int = len(missing)) -> None:
+            emit(LoadEvent("download", progress.name, index, count, progress.done, progress.total))
+
+        model_utils.download(kind, name, progress=on_progress)
+    emit(LoadEvent("load"))
 
 
 class OCRJob(Task):
@@ -102,4 +137,4 @@ def count_supported_files(folder: Path) -> tuple[Path, dict[str, int]]:
     return Path(folder), {"images": images, "pdfs": pdfs}
 
 
-__all__ = ["Task", "OCRJob", "count_supported_files", "ArchiveReport"]
+__all__ = ["Task", "LoadTask", "LoadEvent", "OCRJob", "fetch_missing", "count_supported_files", "ArchiveReport"]
