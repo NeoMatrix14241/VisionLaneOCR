@@ -43,8 +43,8 @@ psutil==7.2.2
 nvidia-ml-py==13.615.71   # official NVML bindings (import name: pynvml)
 
 # --- Optional ---
-# pillow-heif==1.8.1      # enables .heic/.heif input (detected automatically)
-# super-image==0.2.0      # enables "Enhance low-resolution pages" (super-resolution); the model (~MBs) is downloaded
+pillow-heif==1.8.1      # enables .heic/.heif input (detected automatically)
+super-image==0.2.0      # enables "Enhance low-resolution pages" (super-resolution); the model (~MBs) is downloaded
 #                         # from the Hugging Face hub on first use into <doctr_cache>/huggingface. Not run against real models yet.
 
 # Removed in the refactor (no longer imported): lxml, pdf2image, requests, tqdm, wmi.
